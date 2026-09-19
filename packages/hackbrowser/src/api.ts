@@ -21,6 +21,8 @@ import { run } from "./agent.ts"
 import { findSystemChrome } from "./stealth.ts"
 import { Log, type LogSink, type LogRecord, type LogLevel } from "./log.ts"
 import { setEventSink, clearEventSink } from "./panel/emit.ts"
+import { getBugBountyManager } from "./bugbounty.ts"
+import type { BountyProgramConfig } from "./bugbounty.ts"
 import type { AgentConfig, CredentialConfig, CrawlResult, CSEvent } from "./types.ts"
 
 // ============================================================
@@ -60,6 +62,12 @@ export interface CrawlOptions {
   // Network scope (ARCHITECTURE.md §1.4)
   scope?: string[]
   exclude?: string[]
+
+  // Bug Bounty program integration
+  // Load a named bug bounty program config (~/.cyberstrike/bugbounty/<name>.json)
+  bugbountyProgram?: string
+  // Inline bug bounty program config (overrides loaded file)
+  bugbountyConfig?: BountyProgramConfig
 
   // Crawl behavior
   steps?: number
@@ -202,7 +210,73 @@ export async function runCrawl(opts: CrawlOptions): Promise<CrawlResult> {
   if (opts.logSink) Log.setSink(opts.logSink)
   if (opts.eventSink) setEventSink(opts.eventSink)
 
-  const config = toAgentConfig(opts)
+  // Bug Bounty program integration: load config and merge scope/rules
+  let bbConfig: BountyProgramConfig | null = opts.bugbountyConfig ?? null
+  if (opts.bugbountyProgram) {
+    try {
+      const bb = getBugBountyManager()
+      bb.loadProgram(opts.bugbountyProgram)
+      bbConfig = bb.getProgramConfig()
+      log.info("loaded bug bounty program", { name: opts.bugbountyProgram })
+    } catch (err) {
+      log.warn("failed to load bug bounty program", { name: opts.bugbountyProgram, err: String(err) })
+    }
+  }
+
+  // Apply bug bounty program scope (unless already set by user)
+  if (bbConfig && !opts.scope) {
+    const scopePatterns: string[] = []
+    for (const target of bbConfig.scope.in) {
+      // Convert scope target to scope pattern
+      if (target.startsWith("http")) {
+        try {
+          const u = new URL(target)
+          scopePatterns.push(`*.${u.hostname}`)
+        } catch {}
+      } else if (!target.startsWith(".")) {
+        scopePatterns.push(`*.${target}`)
+      }
+    }
+    if (scopePatterns.length > 0) {
+      opts.scope = scopePatterns
+      log.info("applied bug bounty scope", { targets: scopePatterns })
+    }
+  }
+
+  const config: AgentConfig = {
+    targetUrl: opts.url,
+    cyberstrike: {
+      serverUrl: opts.cyberstrikeUrl ?? "http://127.0.0.1:4096",
+      sessionID: opts.sessionID,
+      credentialId: opts.credentialID,
+      username: opts.cyberstrikeUsername,
+      password: opts.cyberstrikePassword,
+    },
+    auth: {
+      sessionFile: opts.sessionFile ? path.resolve(process.cwd(), opts.sessionFile) : undefined,
+      credentials: opts.credentials,
+      authenticated: opts.authenticated,
+    },
+    multiCredentials: opts.multiCredentials,
+    outOfScope: opts.exclude,
+    scope: opts.scope,
+    maxSteps: opts.steps,
+    headless: opts.headless,
+    dryRun: opts.dryRun,
+    panel: opts.panel,
+    model: opts.model,
+    cdp: opts.cdp,
+    signal: opts.signal,
+    // Pass bug bounty config for prompt enrichment
+    bugbounty_config: bbConfig ? {
+      name: bbConfig.name,
+      platform: bbConfig.platform,
+      scope_in: bbConfig.scope.in,
+      scope_out: bbConfig.scope.out,
+      known_issues: bbConfig.known_issues,
+      payout_focus: bbConfig.payout_focus,
+    } : undefined,
+  }
 
   try {
     log.info("runCrawl starting", {

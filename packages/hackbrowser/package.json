@@ -6,7 +6,8 @@
   "private": true,
   "exports": {
     ".": "./src/index.ts",
-    "./api": "./src/api.ts"
+    "./api": "./src/api.ts",
+    "./bugbounty": "./src/bugbounty.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "2.0.0",

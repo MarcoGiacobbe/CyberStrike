@@ -79,6 +79,8 @@ export interface LauncherOptions {
   sessionID: string
   scope?: string[]
   exclude?: string[]
+  // Bug Bounty program name — loads scope, rules, payouts from ~/.cyberstrike/bugbounty/<name>.json
+  bugbountyProgram?: string
   // Credential IDs to crawl as. Length determines crawl mode:
   //   undefined / [] → anonymous (no login, no tagging)
   //   [id]           → manual login + tag captures with this credential ID

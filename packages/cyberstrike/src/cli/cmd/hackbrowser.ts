@@ -26,6 +26,10 @@ export const HackbrowserCommand = cmd({
         array: true,
         describe: 'UI labels to skip (e.g. "Delete Account")',
       })
+      .option("bugbounty-program", {
+        type: "string",
+        describe: "bug bounty program name (loads scope, rules, payouts from program config)",
+      })
       .option("steps", {
         type: "number",
         describe: "max pages to crawl (default 50)",
