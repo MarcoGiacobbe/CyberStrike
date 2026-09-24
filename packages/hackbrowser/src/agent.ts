@@ -29,6 +29,11 @@ import {
 } from "./ingest.ts"
 import { loadSession, autoLogin, handle2FA, waitForManualLogin } from "./auth.ts"
 import { resolveModel, planPage, planUnexploredElements, isAuthError } from "./navigator.ts"
+// Bug bounty program context for the planner prompt — set by run() from
+// AgentConfig.bugbounty_config, read by every planPage call inside this module.
+// Module-level because explorePageWithAI's signature is already at capacity
+// and the context is constant for the whole crawl.
+let bbContext: AgentConfig["bugbounty_config"]
 import {
   collectElements,
   isViewportCenterBlocked,
@@ -730,7 +735,7 @@ async function explorePageWithAI(
   const vcBlocked = await isViewportCenterBlocked(page)
   const snapshot = buildPlannerSnapshot(pageUrl, elements, globalState, credentialId, vcBlocked)
   void csEmit(page, { type: "llm-thinking", reason: "page-plan", elements: elements.length, credential: credentialId })
-  const plan = await planPage(snapshot, model, usageAcc)
+  const plan = await planPage(snapshot, model, usageAcc, bbContext)
   log.info("page plan received", {
     tasks: plan.tasks.length,
     pageState: plan.pageState ?? "unknown",
@@ -867,7 +872,7 @@ async function explorePageWithAI(
         elements: freshElements.length,
         credential: credentialId,
       })
-      const newPlan = await planPage(snapshot, model, usageAcc)
+      const newPlan = await planPage(snapshot, model, usageAcc, bbContext)
       applyPlanIntelligence(newPlan, pageUrl, globalState, credentialId, page) // Aşama 13
       if (newPlan.tasks.length > 0) {
         log.debug("re-plan after state change", {
@@ -939,7 +944,7 @@ async function explorePageWithAI(
       elements: currentElements.length,
       credential: credentialId,
     })
-    const additionalPlan = await planUnexploredElements(snap, unexplored, model, usageAcc)
+    const additionalPlan = await planUnexploredElements(snap, unexplored, model, usageAcc, bbContext)
     applyPlanIntelligence(additionalPlan, pageUrl, globalState, credentialId, page) // Aşama 13
 
     if (additionalPlan.tasks.length === 0) break
@@ -1047,7 +1052,7 @@ async function explorePageWithAI(
           elements: freshElements.length,
           credential: credentialId,
         })
-        const newPlan = await planPage(freshSnap, model, usageAcc)
+        const newPlan = await planPage(freshSnap, model, usageAcc, bbContext)
         applyPlanIntelligence(newPlan, pageUrl, globalState, credentialId, page) // Aşama 13
         if (newPlan.tasks.length > 0) {
           void csEmit(page, {
@@ -2358,6 +2363,9 @@ async function runMultiCredential(config: AgentConfig, credentials: CredentialCo
 // ============================================================
 
 export async function run(config: AgentConfig): Promise<CrawlResult> {
+  // Bug bounty context for the planner prompt (module-level, constant for the
+  // whole crawl — covers both single- and multi-credential paths below).
+  bbContext = config.bugbounty_config
   initAuth(config.cyberstrike.username, config.cyberstrike.password)
 
   // Multi-credential mode: separate code path, same BFS engine

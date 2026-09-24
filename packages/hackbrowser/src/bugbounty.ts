@@ -75,7 +75,8 @@ export class BugBountyManager {
   private programConfigs: Map<string, BountyProgramConfig> = new Map();
 
   constructor() {
-    this.programsDir = path.join(process.env.CYBERSTRIKE_HOME || "~/.cyberstrike", "bugbounty");
+    // os.homedir() — a literal "~" in a path is never expanded by fs APIs.
+    this.programsDir = path.join(process.env.CYBERSTRIKE_HOME || path.join(os.homedir(), ".cyberstrike"), "bugbounty");
     this.ensureProgramsDir();
   }
 
@@ -89,9 +90,10 @@ export class BugBountyManager {
    * List all configured bug bounty programs
    */
   listPrograms(): string[] {
-    const entries = fs.readdirSync(this.programsDir);
-    return entries
-      .filter((e) => fs.statSync(path.join(this.programsDir, e)).isDirectory())
+    // Programs are stored as flat <name>.json files — not directories.
+    return fs
+      .readdirSync(this.programsDir)
+      .filter((e) => e.endsWith(".json"))
       .map((e) => e.replace(/\.json$/, ""));
   }
 

@@ -1,111 +1,93 @@
-// BrowserSkill integration module
-// Wraps the `bsk` CLI tool for browser automation via real browser sessions.
-// Provides functions to execute browser commands and return structured results.
+// BrowserSkill integration — wraps the real `bsk` CLI (https://github.com/Tencent/BrowserSkill)
+// to drive the user's actual browser session. Use for human-in-the-loop flows
+// (2FA, CAPTCHA via `request-help`) and login-state reuse that Playwright can't do.
+//
+// Command surface verified against `bsk --help`: navigate, click, fill, evaluate,
+// screenshot, snapshot, get-html, console, network, request-help, wait-for-navigation,
+// wait-ms, press, select. Global flag `--json` emits machine-readable output.
 
 import { execFile } from "child_process"
 import { Log } from "./log.ts"
 
 const log = Log.create({ service: "hackbrowser:browserskill" })
 
-/**
- * Execute a bsk command and return the result as JSON.
- * Throws an error if the command fails or output is not valid JSON.
- */
-export function executeBskCommand(command: string, args: string[] = []): Promise<any> {
+/** Run `bsk <args...>` and return parsed JSON (--json) or raw stdout. */
+function bsk(args: string[], timeoutMs = 60000): Promise<any> {
   return new Promise((resolve, reject) => {
-    log.debug("executing bsk command", { command, args })
-
-    const child = execFile("bsk", [command, ...args], {
-      timeout: 60000, // 60 second timeout
-      maxBuffer: 1024 * 1024, // 1MB output buffer
-    })
-
-    let stdout = ""
-    let stderr = ""
-
-    child.stdout?.on("data", (data) => {
-      stdout += data.toString()
-    })
-
-    child.stderr?.on("data", (data) => {
-      stderr += data.toString()
-    })
-
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`bsk ${command} failed with code ${code}: ${stderr}`))
+    log.debug("bsk exec", { args })
+    execFile("bsk", [...args, "--json"], { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(`bsk ${args.join(" ")} failed: ${stderr || err.message}`))
         return
       }
-
-      try {
-        const result = JSON.parse(stdout.trim())
-        resolve(result)
-      } catch (e) {
-        reject(new Error(`Failed to parse bsk output as JSON: ${stdout}`))
+      const text = stdout.trim()
+      if (!text) {
+        resolve(null)
+        return
       }
-    })
-
-    child.on("error", (err) => {
-      reject(err)
+      try {
+        resolve(JSON.parse(text))
+      } catch {
+        // Not all commands emit JSON even with --json — return raw text.
+        resolve(text)
+      }
     })
   })
 }
 
-/**
- * Take a screenshot of the current page.
- */
-export async function screenshot(): Promise<string> {
-  const result = await executeBskCommand("screenshot")
-  return result.data
+/** Check the bsk daemon is installed and running. */
+export async function available(): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile("bsk", ["status", "--json"], { timeout: 10000 }, (err, stdout) => {
+      if (err) {
+        log.warn("browserskill not available", { err: String(err) })
+        resolve(false)
+        return
+      }
+      log.debug("bsk status", { stdout: String(stdout).slice(0, 200) })
+      resolve(true)
+    })
+  })
 }
 
-/**
- * Get the current page URL.
- */
-export async function getUrl(): Promise<string> {
-  const result = await executeBskCommand("url")
-  return result.data
-}
+/** Navigate the agent window's tab to a URL. */
+export const navigate = (url: string) => bsk(["navigate", url])
+
+/** Click a snapshot ref or CSS selector. */
+export const click = (ref: string) => bsk(["click", ref])
+
+/** Fill an input / textarea / contenteditable. */
+export const fill = (ref: string, value: string) => bsk(["fill", ref, value])
+
+/** Evaluate a JavaScript expression inside the agent window. */
+export const evaluate = (js: string) => bsk(["evaluate", js])
+
+/** Capture a PNG of the viewport (returns output path). */
+export const screenshot = () => bsk(["screenshot"])
+
+/** Produce an aria-snapshot with @eN refs — the LLM-friendly page view. */
+export const snapshot = () => bsk(["snapshot"])
+
+/** Dump raw HTML for the current tab. */
+export const getHtml = () => bsk(["get-html"])
+
+/** Read buffered console/log/exception messages. */
+export const console_ = () => bsk(["console"])
+
+/** Read buffered network responses / failures. */
+export const network = () => bsk(["network"])
 
 /**
- * Evaluate JavaScript in the current page context.
- * @param js JavaScript code to evaluate
- * @returns JSON-serializable result from the evaluation
+ * Ask the human to complete an in-page step (CAPTCHA / login / confirm).
+ * Blocks until the human resolves it — this is the human-in-the-loop escape hatch.
  */
-export async function evalInPage(js: string): Promise<any> {
-  const result = await executeBskCommand("eval", [js])
-  return result.data
-}
+export const requestHelp = (instruction: string) => bsk(["request-help", instruction], 15 * 60 * 1000)
 
-/**
- * Click an element by CSS selector.
- */
-export async function click(selector: string): Promise<void> {
-  await executeBskCommand("click", [selector])
-}
+/** Wait for a page-lifecycle event (e.g. "load", "networkidle"). */
+export const waitForNavigation = (event: string) => bsk(["wait-for-navigation", event])
 
-/**
- * Fill a form field by CSS selector.
- */
-export async function fill(selector: string, value: string): Promise<void> {
-  await executeBskCommand("fill", [selector, value])
-}
+/** Set <select> option values by value attribute. */
+export const select = (ref: string, ...values: string[]) => bsk(["select", ref, ...values])
 
-/**
- * Submit a form by CSS selector.
- */
-export async function submit(selector: string): Promise<void> {
-  await executeBskCommand("submit", [selector])
-}
-
-/**
- * Check if BrowserSkill is available and installed.
- */
-export async function isBrowserSkillAvailable(): Promise<boolean> {
-  try {
-    await executeBskCommand("--version")
-    return true
-  } catch (e) {
-    return false
-  }
-}
+/** Dispatch a keyboard key combo. */
+export const press = (combo: string) => bsk(["press", combo])

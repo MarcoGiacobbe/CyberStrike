@@ -43,6 +43,15 @@ Enhance CyberStrike's hackbrowser for autonomous Bug Bounty hunting by:
 - CLI commands for program management
 - HackerOne API integration (scope, rules, known issues, payouts)
 
+**NOTE (placeholder):** i campi dinamici del prompt bugbounty.txt
+(`{program_name}`, `{platform}`, `{scope_in}`, `{scope_out}`, `{known_issues}`,
+`{payout_focus}`) sono per ora riempiti dal JSON locale in
+`~/.cyberstrike/bugbounty/<name>.json`. Quando implementiamo il download/sync
+automatico dei programmi da HackerOne (fase `bb sync`), dobbiamo verificare
+che questi placeholder vengano popolati con i dati REALI estratti dalle pagine
+SCOPE / KNOWN ISSUES / REGOLE / BOUNTY del programma, e valutare se servono
+nuovi placeholder (es. regole del programma, asset out-of-scope espliciti).
+
 ### Phase 3: BrowserSkill Integration
 - BrowserSkill as optional backend
 - Human-in-the-loop via BrowserSkill's request-help

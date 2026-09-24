@@ -301,14 +301,7 @@ export interface AgentConfig {
   signal?: AbortSignal
   // Bug Bounty program config — injected by api.ts when --bugbounty-program
   // is specified. Flows to navigator for prompt context enrichment.
-  bugbounty_config?: {
-    name: string
-    platform: string
-    scope_in: string[]
-    scope_out: string[]
-    known_issues: string[]
-    payout_focus: string[]
-  }
+  bugbounty_config?: import("./bugbounty.ts").BountyProgramConfig
 }
 
 /** Single credential definition for multi-credential crawl */

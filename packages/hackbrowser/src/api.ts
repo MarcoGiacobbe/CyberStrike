@@ -267,15 +267,10 @@ export async function runCrawl(opts: CrawlOptions): Promise<CrawlResult> {
     model: opts.model,
     cdp: opts.cdp,
     signal: opts.signal,
-    // Pass bug bounty config for prompt enrichment
-    bugbounty_config: bbConfig ? {
-      name: bbConfig.name,
-      platform: bbConfig.platform,
-      scope_in: bbConfig.scope.in,
-      scope_out: bbConfig.scope.out,
-      known_issues: bbConfig.known_issues,
-      payout_focus: bbConfig.payout_focus,
-    } : undefined,
+    // Pass bug bounty program config for prompt enrichment (navigator renders
+    // the placeholders). Data comes from the local program JSON for now — will
+    // carry real HackerOne-scraped data once bb sync lands (see BUG_BOUNTY_PLAN.md).
+    bugbounty_config: bbConfig ?? undefined,
   }
 
   try {

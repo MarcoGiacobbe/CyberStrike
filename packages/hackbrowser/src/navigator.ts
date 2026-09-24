@@ -40,14 +40,23 @@ export function isAuthError(err: unknown): boolean {
 
 function loadPlannerPrompt(bugbountyConfig?: BountyProgramConfig | null): string {
   if (bugbountyConfig) {
-    // Render Bug Bounty context into the prompt
+    // Render Bug Bounty context into the prompt.
+    // NOTE: placeholders {known_issues} and {payout_focus} are derived here from
+    // the local program JSON. When program auto-sync from HackerOne lands (bb sync),
+    // these will carry the REAL data scraped from the program's SCOPE / KNOWN
+    // ISSUES / RULES / BOUNTY pages — see BUG_BOUNTY_PLAN.md Phase 2.
+    const knownIssues = (bugbountyConfig.knownIssues ?? []).map((k) => k.title)
+    const payouts = bugbountyConfig.payouts
+    const payoutFocus = payouts
+      ? [`critical: ${payouts.critical}`, `high: ${payouts.high}`, `medium: ${payouts.medium}`, `low: ${payouts.low}`]
+      : []
     return bugbountyPromptText
       .replace("{program_name}", bugbountyConfig.name)
-      .replace("{platform}", bugbountyConfig.platform)
+      .replace("{platform}", bugbountyConfig.platform ?? "custom")
       .replace("{scope_in}", bugbountyConfig.scope.in.join(", "))
       .replace("{scope_out}", bugbountyConfig.scope.out.join(", "))
-      .replace("{known_issues}", bugbountyConfig.known_issues.join(", "))
-      .replace("{payout_focus}", bugbountyConfig.payout_focus.join(" > "))
+      .replace("{known_issues}", knownIssues.join(", "))
+      .replace("{payout_focus}", payoutFocus.join(" > "))
   }
   return plannerPromptText
 }
