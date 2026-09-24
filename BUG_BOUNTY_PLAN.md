@@ -87,6 +87,29 @@ non dal launcher TUI. Da aggiungere al launcher se serve multi-cred via TUI.
 **Nota credits:** OpenRouter senza crediti blocca il proxy-agent di CyberStrike
 (orchestratore), NON il planner hackbrowser (che usa il modello iniettato).
 
+### Test su programma REALE: bcny (The Browser Company) — 2026-09-24 ✅
+
+Programma: https://hackerone.com/bcny (Gold Standard Safe Harbor, scope reale:
+company.thebrowser.arc, thebrowser.company, bcny.com, arc.net, diabrowser.com;
+payout Low $100 → Critical $20k). JSON popolato a mano come farà `bb sync`.
+
+Crawl E2E su https://bcny.com, 6 step, autorizzazione utente esplicita.
+
+| Aspetto | Risultato |
+|---|---|
+| Caricamento programma reale | ✅ `loaded bug bounty program bcny` |
+| Scope reale applicato | ✅ 5 domini → `["*.company.thebrowser.arc","*.thebrowser.company","*.bcny.com","*.arc.net","*.diabrowser.com"]` |
+| Redirect cross-dominio in scope | ✅ bcny.com → www.thebrowser.company seguito correttamente |
+| Planner su sito reale (SPA) | ✅ FAQ: click su Question 2-6, CLOSE, THEME; su diabrowser.com plan 4 task ("Watch the scream"...) |
+| Errori click gestiti | ✅ timeout 2s su alcuni bottoni FAQ → warn + crawl prosegue senza crash |
+| Risultato finale | ✅ `completed, pagesExplored=6, capturedEndpoints=6, errors=[]` |
+
+Limiti onesti: 6 step su siti marketing (thebrowser.company, diabrowser.com)
+validano la pipeline ma non trovano vulnerabilità — la superficie d'attacco
+rica (company.thebrowser.arc, l'app Arc) richiede test autenticati e più
+profondi. Il prossimo moltiplicatore è `bb sync` (dati reali dall'API) e
+crawl più lunghi sugli asset applicativi.
+
 ### Phase 3: BrowserSkill Integration
 - BrowserSkill as optional backend
 - Human-in-the-loop via BrowserSkill's request-help
