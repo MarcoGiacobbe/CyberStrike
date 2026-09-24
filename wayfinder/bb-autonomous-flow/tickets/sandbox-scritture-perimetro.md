@@ -1,58 +1,55 @@
 # Ticket: perimetro di scrittura confinato al progetto (sandbox)
 
-## Stato: ANALISI COMPLETA + soluzione verificata con test (2026-09-24). Pronto per implementazione.
+## Stato: PROGETTATO, pronto per implementazione in 2 fasi (2026-09-24)
+
+---
 
 ## Question
 
 Imporre meccanicamente che l'agente NON possa scrivere fuori dalla directory
 del progetto, lasciando la lettura libera.
 
-## Scoperta principale: il canale esiste GIÀ
+## Scoperta 1: il canale per-sessione esiste GIÀ
 
 `session.createNext()` accetta già `permission?: PermissionNext.Ruleset` e lo
-persiste in DB:
+persiste in DB (colonna `permission` di `SessionTable`):
+
 - `src/session/session.sql.ts:29` — `permission: text({mode:"json"}).$type<Ruleset>()`
 - `src/session/index.ts:267` — `createNext({ ..., permission?: PermissionNext.Ruleset })`
 - `src/session/index.ts:394` — path di aggiornamento
 
-E il ruleset attivo è la fusione agente + sessione:
+Il ruleset attivo è la fusione agente + sessione:
 
 ```
 src/session/prompt.ts:1091
   ruleset: PermissionNext.merge(input.agent.permission, input.session.permission ?? [])
 ```
 
-`merge` è order-based e `evaluate()` usa `findLast` (`next.ts:240`), quindi
-**la sessione vince sull'agente**. Conseguenza: NON serve un agente speciale per
-il perimetro — `bb hunt` imposta `session.permission` e il perimetro vale per
-quella sessione, con qualunque agente.
+`merge` è order-based e `evaluate()` usa `findLast` (`next.ts:240`) → **la
+sessione vince sull'agente**. Non serve un agente speciale "con poteri
+limitati": `bb hunt` imposta `session.permission` alla creazione della sessione
+e il perimetro vale per quella sessione, con qualunque agente.
+Granularità corretta: perimetro della **sessione**, non dell'agente.
 
-## Perché NON si può derivare da `Instance.worktree`
-
-`Instance.worktree` è la radice del **repo git** (`Project.fromDirectory`,
-`src/project/project.ts:76`), non la cwd di lancio. Senza `.git` diventa
-`{ id: "global", worktree: "/", sandbox: "/" }` e `containsPath()` ritorna
-`false` per tutto (`src/project/instance.ts:59-63`) → sandbox di fatto
-disattivata, ask su ogni file. Il perimetro va impostato ESPLICITAMENTE.
-
-## Soluzione verificata (test reale con Wildcard.match)
+## Scoperta 2: il ruleset richiede ENTRAMBE le forme del pattern
 
 `write.ts:36` e `edit.ts:61` mandano `patterns: [path.relative(Instance.worktree, filepath)]`
-— quindi RELATIVI. `external-directory.ts` manda glob ASSOLUTI. Servono
-**ENTRAMBE le forme** nel ruleset, altrimenti il perimetro nega anche l'interno
-del progetto (fallimento dell'implementazione ingenua, verificato).
+— RELATIVI al worktree. `external-directory.ts` manda glob ASSOLUTI.
+Col solo pattern assoluto il perimetro nega anche la scrittura DENTRO il
+progetto (verificato: primo tentativo, tutto `deny`, interno incluso).
 
 ```ts
-rules = [
-  { permission: "edit",               pattern: "*",                        action: "deny"  },
-  { permission: "edit",               pattern: "bcny/*",                   action: "allow" },
-  { permission: "edit",               pattern: "/home/marco/bugbounty/bcny/*", action: "allow" },
-  { permission: "external_directory", pattern: "*",                        action: "deny"  },
-  { permission: "external_directory", pattern: "/home/marco/bugbounty/bcny/*", action: "allow" },
+// forma corretta, verificata con test reale su Wildcard.match
+[
+  { permission: "edit",               pattern: "*",                             action: "deny"  },
+  { permission: "edit",               pattern: "bcny/*",                        action: "allow" },
+  { permission: "edit",               pattern: "/home/marco/bugbounty/bcny/*",  action: "allow" },
+  { permission: "external_directory", pattern: "*",                             action: "deny"  },
+  { permission: "external_directory", pattern: "/home/marco/bugbounty/bcny/*",  action: "allow" },
 ]
 ```
 
-Esito del test:
+Esito test:
 ```
 ✅ edit  dentro (relativo)          bcny/state.json
 ✅ edit  sotto (relativo)           bcny/crawls/2026.json
@@ -64,127 +61,126 @@ Esito del test:
 ✅ external_directory glob progetto /home/marco/bugbounty/bcny/*
 ```
 
-## Traversal: NON sfruttabile, ma per caso
+### Perché NON si deriva da `Instance.worktree`
 
-`bcny/../../../etc/passwd` → `path.relative()` lo normalizza a `../../etc/passwd`
-→ non matcha `bcny/*` → cade su `deny *`. Salvato dalla normalizzazione di
-`path.relative()`, NON da un controllo di traversal. Nessuna normalizzazione
-esplicita in write.ts/edit.ts: il path va grezzo al matcher testuale.
+`Instance.worktree` è la radice del **repo git** (`Project.fromDirectory`,
+`src/project/project.ts:76`): cerca `.git` risalendo; se lo trova →
+`sandbox = dirname(dotgit)`; **se NON lo trova → `{ id: "global", worktree: "/", sandbox: "/" }`**.
+E `containsPath()` (`src/project/instance.ts:59`) fa `if (Instance.worktree === "/") return false`.
 
-**Residuo da sistemare**: `external-directory.ts` fa
-`path.join(path.dirname(filepath), "*")` PRIMA di normalizzare → produce
-`/home/etc/*` invece di `/etc/*`. Oggi innocuo (deny `*`), ma con un ruleset
-diverso (es. `/home/*` allow) diventerebbe un buco.
+Conseguenza: lanciare in `~/bugbounty/bcny/` (senza `.git`) NON dà "scrittura
+libera lì dentro, vietata fuori" — dà richiesta di conferma su OGNI file, perché
+ogni path risulta "esterno". Il sandbox non aiuta: si disattiva.
+`~/bugbounty/` non è un repo → motivo in più per impostare il perimetro
+esplicito e usare pattern relativi alla DIR PROGETTO.
 
-## Il buco vero: bash
+## Scoperta 3: ctx.ask con deny È contenimento
 
-`bash.ts` rileva i path esterni SOLO per una lista chiusa (`bash.ts:133`):
+`PermissionNext.ask` (`next.ts:137`) su `rule.action === "deny"` →
+`throw new DeniedError(...)`. Non è una richiesta: è un blocco. Il meccanismo
+regge, il problema è solo far arrivare il pattern giusto a `ask`.
 
-```js
-["cd","rm","cp","mv","mkdir","touch","chmod","chown","cat"]
+## Scoperta 4: il buco di bash è strutturale, non una svista
+
+`bash.ts:130` rileva path esterni SOLO per una lista chiusa:
+`["cd","rm","cp","mv","mkdir","touch","chmod","chown","cat"]`.
+Ma esiste già un albero **tree-sitter** (`parser()`, `bash.ts:50`;
+`tree.rootNode.descendantsOfType("command")`), quindi il rilevamento può essere
+strutturale invece che testuale. Cosa espone il parser, verificato:
+
+```
+$ echo poc > /home/marco/.bashrc    → file_redirect: ["> /home/marco/.bashrc"]   ✅ rilevabile
+$ echo poc >> /tmp/x                → file_redirect: [">> /tmp/x"]               ✅ rilevabile
+$ tee /tmp/x <<< "data"             → file_redirect: []                          ⚠️  path è ARGOMENTO
+$ sed -i 's/a/b/' /etc/hosts        → file_redirect: []                          ⚠️  serve conoscere il flag -i
+$ python3 -c "open('/tmp/z','w')"   → file_redirect: []                          ❌ IRILEVABILE
+$ cat /etc/passwd | tee /tmp/y      → file_redirect: []                          ⚠️  path è ARGOMENTO
+$ curl -o /tmp/out https://...      → file_redirect: []                          ⚠️  serve conoscere il flag -o
+$ target=~/x; echo y > $target      → file_redirect: ["> $target"]               ⚠️  variabile, non risolvibile
+$ cp /etc/hosts /tmp/copia          → file_redirect: []                          ✅ lista chiusa (già coperto)
 ```
 
-`echo`, `tee`, redirezioni (`>`), `sed -i`, `python`, e qualunque altro comando:
-**nessun controllo**. Quindi `bash: "allow"` vanifica il perimetro su edit.
-Percorso esistente per i comandi in lista: `realpath` sull'argomento → se
-`!Instance.containsPath` → `ctx.ask({permission:"external_directory"})`.
+**`python3 -c`, `node -e`, `perl -e` sono irrilevabili per costruzione**: il path
+è dentro una stringa, nessuna analisi statica lo trova. NON è risolvibile con
+più parsing — va accettato e coperto diversamente.
+
+## Soluzione scelta: opzione (c) — classificare il COMANDO, non il path
+
+L'idea che rende (c) solida: **non serve rilevare il path, serve classificare il
+comando**. Tre classi:
+
+| Classe | Azione | Esempi |
+|---|---|---|
+| **A. Read-only noto** | `allow` | `ls cat grep find head tail wc stat file which dig` … |
+| **B. Scrittura nota** | path → `ask`; fuori progetto → `deny` | `cd rm cp mv mkdir touch chmod chown tee sed -i curl -o wget -O` + nodi `file_redirect` |
+| **C. Non classificato** | `ask` | `python3 node perl ruby go php` e qualunque comando nuovo |
+
+- **Classe A** → attrito zero sui comandi di ricognizione (il grosso dell'uso
+  reale durante un hunting).
+- **Classe B** → rilevamento *strutturale* (tree-sitter): nodi `file_redirect`
+  + argomenti della lista chiusa estesa.
+- **Classe C** → `ask`. È qui che `python3 -c` viene coperto: non rilevo il path,
+  chiedo conferma sul comando. L'utente può approvare in blocco ("always") nella
+  sessione.
+
+Risultato: nessun buco noto nel perimetro, e l'attrito cade sui comandi che
+*effettivamente* possono scrivere in modo opaco. Non è un contenimento vero
+(servirebbe seccomp/overlay): è una mitigazione con copertura dichiarata.
+
+## Piano di implementazione in 2 fasi
+
+Fasi separate per non bloccare `hunt-comando-entry-point` dietro una decisione
+che richiede dati d'uso reali.
+
+### FASE 1 — perimetro attivo (chiude questo ticket)
+1. Modulo `buildProjectRuleset(projectDir, worktree)` → ritorna il `Ruleset`
+   (entrambe le forme del pattern, come da Scoperta 2).
+2. `bb hunt` lo passa a `session.createNext({ permission })`.
+3. In `bash.ts`, classi A/B/C come sopra: deny fuori progetto, ask su classe C.
+4. Test: unit su `buildProjectRuleset` + E2E su progetto bbtest/`localhost:4545`.
+
+### FASE 2 — indurimento (ticket separato, dopo che `bb hunt` gira)
+- Normalizzazione esplicita dei path (`path.resolve` prima del match) per non
+  dipendere dalla normalizzazione incidentale di `path.relative()`
+- Fix `external-directory.ts`: `path.join(path.dirname(filepath),"*")` calcolato
+  PRIMA di normalizzare → produce `/home/etc/*` invece di `/etc/*`. Oggi innocuo
+  (cade su deny `*`), con un ruleset diverso (`/home/*` allow) sarebbe un buco.
+- Allowlist read-only estesa, guidata dai comandi realmente usati in fase 1.
 
 ## Decisioni utente (2026-09-24)
 
-- Il vincolo riguarda **SOLO la scrittura**; la lettura resta libera (read è già
-  `allow`, non va toccata)
+- Il vincolo riguarda **SOLO la scrittura**; la lettura resta libera (`read` è
+  già `allow` e non filtrata: non va toccata)
 - Il vincolo vale **anche per bash**
+- Opzione **(c)** scelta: allowlist read-only + `ask` sui non classificati
 
-## Da decidere (prima del codice)
+## Aperto (non blocca il design)
 
-1. **Robustezza di bash**: estendere la lista è fragile per costruzione (non è
-   un contenimento). Alternative: (a) deny su pattern di comandi noti per
-   scrivere, (b) `ask` per ogni comando non riconosciuto come read-only,
-   (c) allowlist read-only + `ask` per il resto. Da scegliere con l'utente:
-   quanto costa in attrito.
-2. **Dove si costruisce il ruleset**: helper riusabile (proposto: in
-   `packages/hackbrowser/src/bugbounty.ts`, prende il path progetto e ritorna il
-   `Ruleset`) chiamato da `bb hunt`, o inline?
-3. **Progetto dentro un repo git**: il `worktree` diventerebbe la radice del
-   repo → tutto il repo scrivibile. Vietare o accettare con avviso? (nota:
-   `~/bugbounty/` NON è repo → worktree `/` → motivo in più per impostare il
-   perimetro esplicito e usare pattern relativi alla DIR PROGETTO, non al worktree)
-4. **Verifica E2E**: tentare scritture fuori progetto con write, edit E bash
-   dentro una sessione reale e registrare l'esito. Come automatizzarlo senza
-   target terzi (target proprio: bbtest su :4545).
+1. **Dove vive il modulo**: proposto `packages/cyberstrike/src/permission/project.ts`
+   (accanto a `next.ts`), consumato da `bb hunt`. Alternativa:
+   `packages/hackbrowser/src/bugbounty.ts`. Il primo è più naturale: è
+   infrastruttura di permessi, non di bug bounty.
+2. **Progetto dentro un repo git**: il `worktree` diventerebbe la radice del repo
+   → tutto il repo scrivibile. Vietare o accettare con avviso? (i repo di
+   hunting esistono: un warning è probabilmente la scelta giusta)
+
+## Limiti dichiarati (cosa il perimetro NON copre)
+
+- `python3 -c`, `node -e`, `perl -e`, `bash -c '...'` e simili: scrittura opaca,
+  coperta da `ask` sul COMANDO, non dal path
+- Variabili non risolvibili staticamente (`echo x > $VAR`): path ignoto → il
+  rilevamento può solo degradare ad `ask`
+- Sottoprocessi lanciati da uno script in classe A/B
+- Non è un contenimento a livello kernel: un binario che scrive fuori progetto
+  viene fermato dal gate di classificazione, non dal SO
+
+## Pattern già in uso nel repo (riferimento)
+
+L'agente `explore` usa `"*": "deny"` + allow selettivi (`src/agent/agent.ts:221`).
+Il modello "tool limitati con deny + allow selettivi" è già praticato: non
+serve inventarlo.
 
 ## Dipendenze
 
 Prerequisito di [stato-progetto], [agente-bounty-prompt-iniziale],
 [hunt-comando-entry-point]. Nessuna dipendenza a monte.
-
----
-
-# Appendice: note di ricognizione originali
-
-`Instance.worktree` è calcolato da `Project.fromDirectory()`
-(`src/project/project.ts:76`):
-- cerca `.git` risalendo (`Filesystem.up({targets:[".git"]})`)
-- se lo trova → `sandbox = dirname(dotgit)` (quindi la radice del REPO, non la
-  cwd di lancio)
-- **se NON lo trova → `{ id: "global", worktree: "/", sandbox: "/" }`**
-
-E `Instance.containsPath()` (`src/project/instance.ts:59`):
-```js
-containsPath(filepath) {
-  if (Instance.worktree === "/") return false   // nessuna sandbox
-  ...
-}
-```
-
-Conseguenza: lanciare in `~/bugbounty/bcny/` (senza `.git`) NON dà "scrittura
-libera lì dentro, vietata fuori" — dà richiesta di conferma su OGNI file, perché
-ogni path risulta "esterno". Il sandbox non aiuta, si disattiva.
-
-Meccanismo dei permessi (`src/permission/next.ts`):
-- `Action = allow | deny | ask`; `Rule = {permission, pattern, action}`
-- `evaluate()` → l'ULTIMA regola che matcha vince (order-based)
-- `fromConfig()` espande `~/`, `$HOME/`
-- i tool mandano i pattern: `write.ts` e `edit.ts` → `permission: "edit"`,
-  `patterns: [path.relative(Instance.worktree, filepath)]`
-- `external-directory.ts` → `permission: "external_directory"`, glob del parent
-- `bash.ts` → `permission: "bash"`, patterns = testo dei comandi (parser, NON
-  contenimento reale)
-
-Pattern già in uso nel repo: l'agente `explore` ha `"*": "deny"` + allow
-selettivi (`src/agent/agent.ts:221`). Quindi il modello "agente con tool
-limitati" è già praticato — non serve inventarlo.
-
-## Decisioni utente (2026-09-24)
-
-- Il vincolo riguarda **SOLO la scrittura**; la lettura resta libera (read è già
-  `allow`, non va toccata)
-- Il vincolo vale **anche per bash**: i comandi che possono scrivere fuori dal
-  progetto vanno bloccati o messi in conferma umana
-
-## Direzione
-
-1. **Non affidarsi al `.git`**: il perimetro di scrittura deve essere impostato
-   ESPLICITAMENTE alla directory del progetto, non derivato dal repo. Il
-   comportamento di default (nessun `.git` → `worktree "/"` → ask su tutto) va
-   gestito, non subito.
-2. **Ordine delle regole**: `edit: deny` su `*`, poi `allow` sul percorso del
-   progetto (l'ordine conta, vince l'ultima). Idem `external_directory`, o ogni
-   `~/...` chiede conferma.
-3. **bash**: `bash: "allow"` vanifica qualsiasi blocco su write/edit (`echo >`
-   scrive ovunque). Opzioni da valutare: deny sui pattern che toccano path fuori
-   dal progetto, oppure `ask` condizionato al path rilevato nel comando.
-   Il parser esistente (`Peril`/arity, blocco `--file-write`) non è un
-   contenimento: va deciso quanto robusto deve essere.
-
-## Da decidere
-
-1. Dove si imposta il perimetro: nel config dell'agente bounty (permission
-   ruleset), in `bb hunt`, o entrambi? (`bb hunt` deve garantirselo da sé)
-2. Un progetto dentro un repo git cosa fa? Il `worktree` diventerebbe la radice
-   del repo → tutto il repo scrivibile. Vietare progetti dentro repo, o
-   accettare con avviso?
-3. bash: deny sui path rilevati vs `ask` vs un elenco di comandi negati.
-   Quanto deve essere robusto? (un parser non è un contenimento)
-4. Verifica: come si PROVA che il perimetro regge — tentare scritture fuori
-   progetto (dentro e fuori git) e registrare l'esito. Serve un test E2E.
