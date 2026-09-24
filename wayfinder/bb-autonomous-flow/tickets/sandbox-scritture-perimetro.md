@@ -240,3 +240,77 @@ serve inventarlo.
 
 Prerequisito di [stato-progetto], [agente-bounty-prompt-iniziale],
 [hunt-comando-entry-point]. Nessuna dipendenza a monte.
+---
+
+## Verifica indipendente (2026-09-25)
+
+Due revisori indipendenti hanno attaccato il perimetro con mandato avversariale
+(cercare buchi, non confermare il caso felice). Hanno trovato **5 difetti reali**,
+tutti riprodotti e poi chiusi. Il primo era grave.
+
+### Buchi trovati e chiusi
+
+1. **CRITICO — redirect senza comando = zero controlli.** Tree-sitter parsa
+   `> /tmp/x` come `redirected_statement` senza figlio `command`. Il rilevamento
+   viveva dentro `descendantsOfType("command")`, quindi non entrava mai:
+   `> ~/.bashrc` **troncava a zero** il file senza nemmeno una richiesta.
+   *Fix*: i `file_redirect` sono raccolti a livello di albero, fuori dal loop
+   sui comandi; l'estrazione usa il campo `destination`.
+
+2. **CRITICO — `always: ["*"]` cancella il perimetro.** `write.ts`/`edit.ts`
+   chiedono `always: ["*"]`; un click "sempre" su una scrittura interna
+   aggiungeva `{edit,*,allow}` in coda, e `evaluate` (`findLast`) lo faceva
+   vincere su tutto. Il perimetro spariva per il resto della sessione.
+   *Fix*: in `PermissionNext.ask`, al momento di registrare un `always`, i
+   pattern che coprono tutto vengono esclusi se il ruleset attivo contiene un
+   `deny` sulla stessa permission. Il ruleset viene conservato in `pending`.
+   Verificato: dopo l'always, la scrittura esterna è ancora `deny` e quella
+   interna ancora `allow`.
+
+3. **Path dinamico non confinato.** `echo x > $VAR` non produceva alcuna
+   richiesta dedicata. Peggio: `echo x > "$VAR"` (quoted) passava per `realpath`,
+   che risolve il **literal** e lo considera dentro il progetto → il target
+   quoted e solo dentro. Stessa cosa per `$VAR/y`, ridotto al frammento `/y`.
+   *Fix*: se il `destination` è un nodo di espansione (`simple_expansion`,
+   `expansion`, `command_substitution`) va in `unresolved` **prima** di
+   `realpath`. Verificato su tutte e 4 le forme.
+
+4. **`realpath` fallito scartato in silenzio.** Un path non risolvibile usciva
+   dal controllo senza traccia. *Fix*: entra in `unresolved`.
+
+5. **Metacaratteri glob nel nome del programma.** `Wildcard.match` traduce `*`
+   in `.*` senza escape, e l'escape non esiste (`\\*` diventa `\\.*`). Un nome
+   come `bcny*` generava un allow che copriva anche i programmi sorella.
+   *Fix*: `globMeta()` — il nome con `*`, `?`, `[`, `]` è rifiutato da
+   `diagnose` e rifiutato di nuovo in `buildProjectRuleset` (difesa in
+   profondità). `isSafe` è passato a lista positiva, così un rischio nuovo
+   è rifiutato di default.
+
+### Falso positivo, verificato e respinto
+
+Il revisore ha segnalato come regressione che `cat /etc/passwd` non chiede più
+`external_directory`. **Non è una regressione: è il requisito.** Sotto il
+perimetro `external_directory` è `deny`; con la vecchia lista chiusa `cat`
+veniva trattato come scrittura, quindi la **lettura** fuori progetto sarebbe
+stata negata — l'opposto di "leggere ovunque, scrivere solo nel progetto".
+Il test `bash.test.ts` che asseriva il vecchio comportamento è stato riscritto.
+
+### Verifiche mie (esecuzione reale, non deduzione)
+
+- `test/permission/perimeter-containment.test.ts` — il gate reale
+  (`PermissionNext.ask`) lancia `DeniedError` su scrittura esterna, lascia
+  passare quella interna; una scrittura vera riesce dentro e il file fuori
+  **non esiste**; lettura libera verificata su `/etc/hostname`, `/etc/shadow`,
+  `~/.ssh/id_rsa`.
+- `test/permission/session-perimeter.test.ts` — ciclo modulo → `session.createNext`
+  → DB → rilettura → merge con i permessi dell'agente. Il perimetro vince anche
+  con un agente permissivo. Fissa il contratto: `buildProjectRuleset` deve
+  ricevere **lo stesso `worktree` di `Instance`**.
+- `test/permission/perimeter-hardening.test.ts` — i buchi 2 e 5.
+- `test/tool/bash-perimeter-probe.test.ts` — `execute()` reale su 13 comandi.
+
+### Ancora non verificato
+
+- Attrito reale di `bash` in un hunting vero (quante conferme si ricevono)
+- E2E con `bb hunt` completo: il comando non esiste ancora
+- Nessun contenimento a livello kernel (dichiarato sopra)

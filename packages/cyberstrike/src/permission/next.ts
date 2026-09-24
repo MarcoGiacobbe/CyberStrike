@@ -118,6 +118,7 @@ export namespace PermissionNext {
       string,
       {
         info: Request
+        ruleset: Ruleset
         resolve: () => void
         reject: (e: any) => void
       }
@@ -150,6 +151,7 @@ export namespace PermissionNext {
             }
             s.pending[id] = {
               info,
+              ruleset,
               resolve,
               reject,
             }
@@ -199,7 +201,21 @@ export namespace PermissionNext {
         return
       }
       if (input.reply === "always") {
+        // Un `always` su un pattern che copre TUTTO (`*`, come quello che
+        // write.ts/edit.ts mandano) distruggerebbe il perimetro: `approved`
+        // viene valutato per ultimo e `findLast` lo farebbe vincere sul `deny`
+        // del progetto, aprendo la sessione intera a `edit("/etc/passwd")`.
+        // Se il ruleset attivo contiene un `deny` per questa permission, il
+        // confine è una decisione di sicurezza e l'utente non può renderla
+        // permanente con un click: si approva solo questa volta.
+        const perimetrato = existing.ruleset.some((r) => r.permission === existing.info.permission && r.action === "deny")
+        const ampi = existing.info.always.filter((pattern) => perimetrato && Wildcard.match("*", pattern))
+        for (const pattern of ampi) {
+          log.info("always limited by perimeter", { permission: existing.info.permission, pattern })
+        }
+
         for (const pattern of existing.info.always) {
+          if (ampi.includes(pattern)) continue
           s.approved.push({
             permission: existing.info.permission,
             pattern,

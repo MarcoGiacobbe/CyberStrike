@@ -283,7 +283,7 @@ export namespace ProjectPerimeter {
   type Rule = PermissionNext.Rule
   type Ruleset = PermissionNext.Ruleset
 
-  export type Risk = "none" | "no-repo" | "project-in-repo" | "project-is-repo-root"
+  export type Risk = "none" | "no-repo" | "project-in-repo" | "project-is-repo-root" | "unsafe-program-name"
 
   export type Diagnosis = {
     /** directory del progetto, risolta e normalizzata */
@@ -311,6 +311,18 @@ export namespace ProjectPerimeter {
     const matches = Filesystem.up({ targets: [".git"], start: resolved })
     const dotgit = await matches.next().then((x) => x.value)
     await matches.return()
+
+    if (globMeta(resolved)) {
+      return {
+        projectDir: resolved,
+        worktree: undefined,
+        risk: "unsafe-program-name",
+        warning:
+          `Il percorso del progetto contiene metacaratteri di glob (${resolved}). ` +
+          `I pattern di permesso derivano da questo percorso, e un metacarattere ` +
+          `allarga l'allow oltre il progetto. Rinominare il programma senza *, ?, [ ].`,
+      }
+    }
 
     if (!dotgit) {
       return {
@@ -350,9 +362,18 @@ export namespace ProjectPerimeter {
     }
   }
 
-  /** true se la directory del progetto può ospitare un perimetro affidabile */
+  /**
+   * true se la directory del progetto può ospitare un perimetro affidabile.
+   * Lista positiva: un rischio nuovo deve essere rifiutato di default, non
+   * passare in silenzio perché non è quello che ci si ricordava di escludere.
+   */
   export function isSafe(d: Diagnosis): boolean {
-    return d.risk !== "project-is-repo-root"
+    return d.risk === "none" || d.risk === "no-repo" || d.risk === "project-in-repo"
+  }
+
+  /** true se la stringa contiene metacaratteri di glob di `Wildcard.match` */
+  export function globMeta(s: string): boolean {
+    return /[*?[\]]/.test(s)
   }
 
   /**
@@ -371,6 +392,19 @@ export namespace ProjectPerimeter {
     const dir = path.resolve(projectDir)
     const rel = path.relative(worktree ?? "/", dir)
 
+    // `Wildcard.match` traduce `*` -> `.*` e `?` -> `.` su TUTTO il pattern,
+    // inclusi i metacaratteri che fossero nel nome del programma: il pattern
+    // allow coprirebbe più del dovuto (con program `*` diventerebbe scrivibile
+    // l'intero albero `programs/`, quindi anche i programmi sorella). NON esiste
+    // un escape utilizzabile dall'esterno — `\*` diventa `\.*`, che non matcha
+    // nulla, e `?` è a sua volta un jolly. L'unica difesa corretta è rifiutare
+    // il nome: un identificatore di programma non ha ragione di contenere
+    // metacaratteri di glob.
+    if (globMeta(dir) || globMeta(rel)) {
+      throw new Error(
+        `project directory contains glob metacharacters and cannot be used as a permission pattern: ${dir}`,
+      )
+    }
     const allowPatterns = [rel + "/*", dir + "/*"]
 
     return [
