@@ -64,6 +64,13 @@ export interface WorkerOptions {
   sessionID?: string
   scope?: string[]
   exclude?: string[]
+  // Bug bounty program name — worker passes it to runCrawl, which loads
+  // ~/.cyberstrike/bugbounty/<name>.json and enriches the planner prompt.
+  bugbountyProgram?: string
+  // Hunter identity (UA + disclosure headers) resolved from the program
+  // config in the parent — passed through so the worker does not need to
+  // re-read the program file. Plain object, JSON-serializable.
+  identity?: { userAgent?: string; extraHeaders?: Record<string, string> }
   steps?: number
   headless: boolean
   panel: boolean

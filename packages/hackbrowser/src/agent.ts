@@ -29,6 +29,12 @@ import {
 } from "./ingest.ts"
 import { loadSession, autoLogin, handle2FA, waitForManualLogin } from "./auth.ts"
 import { resolveModel, planPage, planUnexploredElements, isAuthError } from "./navigator.ts"
+import { resolveFieldValue } from "./accounts.ts"
+// Bug bounty program context for the planner prompt — set by run() from
+// AgentConfig.bugbounty_config, read by every planPage call inside this module.
+// Module-level because explorePageWithAI's signature is already at capacity
+// and the context is constant for the whole crawl.
+let bbContext: AgentConfig["bugbounty_config"]
 import {
   collectElements,
   isViewportCenterBlocked,
@@ -125,6 +131,54 @@ const SKIP_AUTO_DISCOVERY = /\b(logout|sign.?out|log.?out|delete.?account|reset.
 async function stabilizeAfterGoto(page: Page): Promise<void> {
   await page.waitForTimeout(POST_GOTO_WAIT)
   await page.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT }).catch(() => {})
+  await waitForDomQuiescence(page)
+}
+
+/**
+ * DOM-mutation quiescence wait for timer-mounted content (issue #103 gap B).
+ * Timer-driven mounts (setTimeout, no network) are invisible to networkidle.
+ * Wait until the DOM has been quiet for DOM_QUIET_MS, bounded by DOM_QUIET_TIMEOUT
+ * so a page with continuous mutations (chat widget, analytics) never blocks the crawl.
+ * On a stable page the cost is just DOM_QUIET_MS; on a mutating page it caps at
+ * DOM_QUIET_TIMEOUT (covers the 4.5s synthetic repro with margin).
+ */
+const DOM_QUIET_MS = 600
+const DOM_QUIET_TIMEOUT = 5000
+
+export async function waitForDomQuiescence(page: Page): Promise<void> {
+  try {
+    await page.evaluate(
+      ({ quietMs, timeoutMs }) => {
+        return new Promise<void>((resolve) => {
+          let quietTimer: number | undefined
+          const timeout = window.setTimeout(() => {
+            observer.disconnect()
+            if (quietTimer !== undefined) clearTimeout(quietTimer)
+            resolve()
+          }, timeoutMs)
+          const observer = new MutationObserver(() => {
+            if (quietTimer !== undefined) clearTimeout(quietTimer)
+            quietTimer = window.setTimeout(() => {
+              clearTimeout(timeout)
+              observer.disconnect()
+              resolve()
+            }, quietMs)
+          })
+          observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+          })
+          quietTimer = window.setTimeout(() => {
+            clearTimeout(timeout)
+            observer.disconnect()
+            resolve()
+          }, quietMs)
+        })
+      },
+      { quietMs: DOM_QUIET_MS, timeoutMs: DOM_QUIET_TIMEOUT },
+    )
+  } catch {}
 }
 
 // ============================================================
@@ -730,7 +784,7 @@ async function explorePageWithAI(
   const vcBlocked = await isViewportCenterBlocked(page)
   const snapshot = buildPlannerSnapshot(pageUrl, elements, globalState, credentialId, vcBlocked)
   void csEmit(page, { type: "llm-thinking", reason: "page-plan", elements: elements.length, credential: credentialId })
-  const plan = await planPage(snapshot, model, usageAcc)
+  const plan = await planPage(snapshot, model, usageAcc, bbContext)
   log.info("page plan received", {
     tasks: plan.tasks.length,
     pageState: plan.pageState ?? "unknown",
@@ -867,7 +921,7 @@ async function explorePageWithAI(
         elements: freshElements.length,
         credential: credentialId,
       })
-      const newPlan = await planPage(snapshot, model, usageAcc)
+      const newPlan = await planPage(snapshot, model, usageAcc, bbContext)
       applyPlanIntelligence(newPlan, pageUrl, globalState, credentialId, page) // Aşama 13
       if (newPlan.tasks.length > 0) {
         log.debug("re-plan after state change", {
@@ -939,7 +993,7 @@ async function explorePageWithAI(
       elements: currentElements.length,
       credential: credentialId,
     })
-    const additionalPlan = await planUnexploredElements(snap, unexplored, model, usageAcc)
+    const additionalPlan = await planUnexploredElements(snap, unexplored, model, usageAcc, bbContext)
     applyPlanIntelligence(additionalPlan, pageUrl, globalState, credentialId, page) // Aşama 13
 
     if (additionalPlan.tasks.length === 0) break
@@ -1047,7 +1101,7 @@ async function explorePageWithAI(
           elements: freshElements.length,
           credential: credentialId,
         })
-        const newPlan = await planPage(freshSnap, model, usageAcc)
+        const newPlan = await planPage(freshSnap, model, usageAcc, bbContext)
         applyPlanIntelligence(newPlan, pageUrl, globalState, credentialId, page) // Aşama 13
         if (newPlan.tasks.length > 0) {
           void csEmit(page, {
@@ -1250,7 +1304,19 @@ async function executeFormTask(
     }
 
     const action = fieldAction(field.role)
-    const value = action === "click" ? undefined : field.value
+    // Bug bounty autonomous registration: replace AUTO_ACCOUNT markers (and
+    // empty email/password fields) with generated, tracked credentials. The
+    // LLM never sees or invents real credentials — it only emits the markers
+    // when it identifies a signup form (per the bb prompt directives).
+    const rawValue = action === "click" ? undefined : field.value
+    const value =
+      rawValue === undefined
+        ? undefined
+        : resolveFieldValue(
+            { label: field.label, type: el.type, value: rawValue },
+            bbContext?.name ?? "",
+            new URL(pageUrl).host,
+          )
     const key = `${el.selector}::${action}::${value ?? ""}`
     if (semanticActionsDone.has(key)) continue
 
@@ -1947,7 +2013,7 @@ async function runMultiCredential(config: AgentConfig, credentials: CredentialCo
   const lastAuthHeaders = new Map<string, Record<string, string>>()
 
   for (const [credIndex, cred] of credentials.entries()) {
-    const browserContext = await browser.newContext(Stealth.contextOptions(config.headless ?? false))
+    const browserContext = await browser.newContext(Stealth.contextOptions(config.headless ?? false, config.identity))
     await browserContext.addInitScript(Stealth.INIT_SCRIPT)
     if (panelOn) await browserContext.addInitScript(PANEL_INIT_SCRIPT)
     const page = await browserContext.newPage()
@@ -2358,6 +2424,9 @@ async function runMultiCredential(config: AgentConfig, credentials: CredentialCo
 // ============================================================
 
 export async function run(config: AgentConfig): Promise<CrawlResult> {
+  // Bug bounty context for the planner prompt (module-level, constant for the
+  // whole crawl — covers both single- and multi-credential paths below).
+  bbContext = config.bugbounty_config
   initAuth(config.cyberstrike.username, config.cyberstrike.password)
 
   // Multi-credential mode: separate code path, same BFS engine
@@ -2407,7 +2476,7 @@ export async function run(config: AgentConfig): Promise<CrawlResult> {
 
   const browser = await Stealth.connect({ cdp: config.cdp, headless: config.headless ?? false })
   const health = createBrowserHealth()
-  const context: BrowserContext = await browser.newContext(Stealth.contextOptions(config.headless ?? false))
+  const context: BrowserContext = await browser.newContext(Stealth.contextOptions(config.headless ?? false, config.identity))
   await context.addInitScript(Stealth.INIT_SCRIPT)
   if (panelOn) await context.addInitScript(PANEL_INIT_SCRIPT)
   const page = await context.newPage()

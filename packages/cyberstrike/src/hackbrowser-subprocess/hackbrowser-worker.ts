@@ -308,6 +308,10 @@ function buildCrawlOptions(opts: WorkerOptions, signal: AbortSignal): CrawlOptio
     sessionID: opts.sessionID,
     scope: opts.scope,
     exclude: opts.exclude,
+    bugbountyProgram: opts.bugbountyProgram,
+    // Identity resolved by the parent (from the program config) — applied at
+    // Playwright context level so the FIRST request carries UA + headers.
+    identity: opts.identity,
     steps: opts.steps,
     headless: opts.headless,
     panel: opts.panel,

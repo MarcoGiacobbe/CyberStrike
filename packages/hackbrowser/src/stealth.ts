@@ -50,17 +50,27 @@ export async function connect(opts: { cdp?: string; headless: boolean }): Promis
   return chromium.launch(launchOptions(opts.headless))
 }
 
-export function contextOptions(headless = true): BrowserContextOptions {
+export function contextOptions(
+  headless = true,
+  identity?: { userAgent?: string; extraHeaders?: Record<string, string> },
+): BrowserContextOptions {
   // Report the REAL Chrome UA (no spoof). A faked Windows UA over the real macOS/Linux
   // navigator.platform is a glaring cross-check mismatch that makes detection easier, not
   // harder; only automation tells are hidden (INIT_SCRIPT). The real host stays consistent.
-  return {
+  // Exception: bug bounty identity — when the program requires a self-identifying UA,
+  // we override (disclosed automation, not stealth).
+  const opts: BrowserContextOptions = {
     viewport: headless ? { width: 1920, height: 1080 } : null,
     screen: { width: 1920, height: 1080 },
     locale: "en-US",
     timezoneId: "America/New_York",
     extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
   }
+  if (identity?.userAgent) opts.userAgent = identity.userAgent
+  if (identity?.extraHeaders) {
+    opts.extraHTTPHeaders = { ...opts.extraHTTPHeaders, ...identity.extraHeaders }
+  }
+  return opts
 }
 
 export const INIT_SCRIPT = `

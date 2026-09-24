@@ -299,6 +299,13 @@ export interface AgentConfig {
   // iteration boundary; browser closes via existing finally block.
   // Wired by api.ts from CrawlOptions.signal (Faz B.5).
   signal?: AbortSignal
+  // Bug Bounty program config — injected by api.ts when --bugbounty-program
+  // is specified. Flows to navigator for prompt context enrichment.
+  bugbounty_config?: import("./bugbounty.ts").BountyProgramConfig
+  // Hunter identity derived from the bug bounty program (UA + disclosure
+  // headers). Applied at Playwright context level so EVERY request — the very
+  // first navigation included — carries the program-required identification.
+  identity?: { userAgent?: string; extraHeaders?: Record<string, string> }
 }
 
 /** Single credential definition for multi-credential crawl */

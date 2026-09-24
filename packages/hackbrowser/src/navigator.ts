@@ -4,6 +4,7 @@ import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import type { PagePlan, PageTask, PageStateKind, RevisitTrigger, CrawlUsage } from "./types.ts"
 import type { PlannerSnapshot } from "./state.ts"
+import type { BountyProgramConfig } from "./bugbounty.ts"
 
 // Bundle the planner prompt as text at import time. Previously this used
 // readFileSync(import.meta.url + "prompt/planner.txt"), which works fine
@@ -12,6 +13,7 @@ import type { PlannerSnapshot } from "./state.ts"
 // resolution returns ENOENT. Text import lets Bun embed the file content
 // into the bundle, identical behavior across both modes.
 import plannerPromptText from "./prompt/planner.txt" with { type: "text" }
+import bugbountyPromptText from "./prompt/bugbounty.txt" with { type: "text" }
 
 const log = Log.create({ service: "hackbrowser:navigator" })
 
@@ -36,7 +38,26 @@ export function isAuthError(err: unknown): boolean {
 // Prompt loading
 // ============================================================
 
-function loadPlannerPrompt(): string {
+function loadPlannerPrompt(bugbountyConfig?: BountyProgramConfig | null): string {
+  if (bugbountyConfig) {
+    // Render Bug Bounty context into the prompt.
+    // NOTE: placeholders {known_issues} and {payout_focus} are derived here from
+    // the local program JSON. When program auto-sync from HackerOne lands (bb sync),
+    // these will carry the REAL data scraped from the program's SCOPE / KNOWN
+    // ISSUES / RULES / BOUNTY pages — see BUG_BOUNTY_PLAN.md Phase 2.
+    const knownIssues = (bugbountyConfig.knownIssues ?? []).map((k) => k.title)
+    const payouts = bugbountyConfig.payouts
+    const payoutFocus = payouts
+      ? [`critical: ${payouts.critical}`, `high: ${payouts.high}`, `medium: ${payouts.medium}`, `low: ${payouts.low}`]
+      : []
+    return bugbountyPromptText
+      .replace("{program_name}", bugbountyConfig.name)
+      .replace("{platform}", bugbountyConfig.platform ?? "custom")
+      .replace("{scope_in}", bugbountyConfig.scope.in.join(", "))
+      .replace("{scope_out}", bugbountyConfig.scope.out.join(", "))
+      .replace("{known_issues}", knownIssues.join(", "))
+      .replace("{payout_focus}", payoutFocus.join(" > "))
+  }
   return plannerPromptText
 }
 
@@ -100,8 +121,9 @@ export async function planPage(
   snapshot: PlannerSnapshot,
   model: LanguageModel,
   usageAcc?: CrawlUsage,
+  bugbountyConfig?: BountyProgramConfig | null,
 ): Promise<PagePlan> {
-  const systemPrompt = loadPlannerPrompt()
+  const systemPrompt = loadPlannerPrompt(bugbountyConfig)
   const userMessage = JSON.stringify(snapshot)
 
   const attempt = async (): Promise<PagePlan> => {
@@ -165,8 +187,9 @@ export async function planUnexploredElements(
   unexploredLabels: string[],
   model: LanguageModel,
   usageAcc?: CrawlUsage,
+  bugbountyConfig?: BountyProgramConfig | null,
 ): Promise<PagePlan> {
-  const systemPrompt = loadPlannerPrompt()
+  const systemPrompt = loadPlannerPrompt(bugbountyConfig)
 
   // Send only unexplored elements to LLM — prevents re-planning already-done actions
   const unexploredSet = new Set(

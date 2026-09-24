@@ -21,6 +21,8 @@ import { run } from "./agent.ts"
 import { findSystemChrome } from "./stealth.ts"
 import { Log, type LogSink, type LogRecord, type LogLevel } from "./log.ts"
 import { setEventSink, clearEventSink } from "./panel/emit.ts"
+import { getBugBountyManager } from "./bugbounty.ts"
+import type { BountyProgramConfig } from "./bugbounty.ts"
 import type { AgentConfig, CredentialConfig, CrawlResult, CSEvent } from "./types.ts"
 
 // ============================================================
@@ -60,6 +62,15 @@ export interface CrawlOptions {
   // Network scope (ARCHITECTURE.md §1.4)
   scope?: string[]
   exclude?: string[]
+
+  // Bug Bounty program integration
+  // Load a named bug bounty program config (~/.cyberstrike/bugbounty/<name>.json)
+  bugbountyProgram?: string
+  // Inline bug bounty program config (overrides loaded file)
+  bugbountyConfig?: BountyProgramConfig
+  // Hunter identity (UA + disclosure headers) — resolved by the caller from
+  // the program config, or passed pre-resolved (worker subprocess path).
+  identity?: { userAgent?: string; extraHeaders?: Record<string, string> }
 
   // Crawl behavior
   steps?: number
@@ -103,6 +114,28 @@ export type { CrawlResult, CSEvent } from "./types.ts"
 // ============================================================
 
 const log = Log.create({ service: "hackbrowser:api" })
+
+/**
+ * Derive the hunter identity (UA + disclosure headers) from a bug bounty
+ * program config. Programs require identification in different ways: some
+ * want the username in the User-Agent, some a custom header — configure
+ * exactly what the program's policy asks, and it is applied from the FIRST
+ * request of every crawl (Playwright context-level, covers navigation + XHR).
+ */
+export function resolveIdentity(cfg: BountyProgramConfig | null): {
+  userAgent?: string
+  extraHeaders?: Record<string, string>
+} {
+  const id = cfg?.identity
+  if (!id?.h1_username) return {}
+  const ua = (id.user_agent_template ?? "CyberStrike-BB/1.0 (H1: {username})").replaceAll(
+    "{username}",
+    id.h1_username,
+  )
+  const headers: Record<string, string> = {}
+  if (id.header_name) headers[id.header_name] = id.h1_username
+  return { userAgent: ua, extraHeaders: headers }
+}
 
 /**
  * Verify the chromium browser binary is installed. INTEGRATION.md §10.7
@@ -202,7 +235,71 @@ export async function runCrawl(opts: CrawlOptions): Promise<CrawlResult> {
   if (opts.logSink) Log.setSink(opts.logSink)
   if (opts.eventSink) setEventSink(opts.eventSink)
 
-  const config = toAgentConfig(opts)
+  // Bug Bounty program integration: load config and merge scope/rules
+  let bbConfig: BountyProgramConfig | null = opts.bugbountyConfig ?? null
+  if (opts.bugbountyProgram) {
+    try {
+      const bb = getBugBountyManager()
+      bb.loadProgram(opts.bugbountyProgram)
+      bbConfig = bb.getProgramConfig()
+      log.info("loaded bug bounty program", { name: opts.bugbountyProgram })
+    } catch (err) {
+      log.warn("failed to load bug bounty program", { name: opts.bugbountyProgram, err: String(err) })
+    }
+  }
+
+  // Apply bug bounty program scope (unless already set by user)
+  if (bbConfig && !opts.scope) {
+    const scopePatterns: string[] = []
+    for (const target of bbConfig.scope.in) {
+      // Convert scope target to scope pattern
+      if (target.startsWith("http")) {
+        try {
+          const u = new URL(target)
+          scopePatterns.push(`*.${u.hostname}`)
+        } catch {}
+      } else if (!target.startsWith(".")) {
+        scopePatterns.push(`*.${target}`)
+      }
+    }
+    if (scopePatterns.length > 0) {
+      opts.scope = scopePatterns
+      log.info("applied bug bounty scope", { targets: scopePatterns })
+    }
+  }
+
+  const config: AgentConfig = {
+    targetUrl: opts.url,
+    cyberstrike: {
+      serverUrl: opts.cyberstrikeUrl ?? "http://127.0.0.1:4096",
+      sessionID: opts.sessionID,
+      credentialId: opts.credentialID,
+      username: opts.cyberstrikeUsername,
+      password: opts.cyberstrikePassword,
+    },
+    auth: {
+      sessionFile: opts.sessionFile ? path.resolve(process.cwd(), opts.sessionFile) : undefined,
+      credentials: opts.credentials,
+      authenticated: opts.authenticated,
+    },
+    multiCredentials: opts.multiCredentials,
+    outOfScope: opts.exclude,
+    scope: opts.scope,
+    maxSteps: opts.steps,
+    headless: opts.headless,
+    dryRun: opts.dryRun,
+    panel: opts.panel,
+    model: opts.model,
+    cdp: opts.cdp,
+    signal: opts.signal,
+    // Pass bug bounty program config for prompt enrichment (navigator renders
+    // the placeholders). Data comes from the local program JSON for now — will
+    // carry real HackerOne-scraped data once bb sync lands (see BUG_BOUNTY_PLAN.md).
+    bugbounty_config: bbConfig ?? undefined,
+    // Explicit opts.identity (e.g. pre-resolved by the launcher for the worker
+    // subprocess) wins; otherwise derive it from the loaded program config.
+    identity: opts.identity ?? resolveIdentity(bbConfig),
+  }
 
   try {
     log.info("runCrawl starting", {
