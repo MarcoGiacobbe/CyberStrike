@@ -20,3 +20,10 @@ com'è — la sandbox vale per questo flow.
 - (a) da sola basta? O serve anche deny-list dei path nei tool esistenti?
 - Audit trail: log append-only delle scritture per ripresa sessione
 - Cosa succede a read: lettura completa OK (vincolo utente lo consente)
+
+## RESOLUTION (2026-09-24) — Opzione A
+
+Nel flusso bug bounty l'LLM NON riceve strumenti di scrittura libera: ogni
+mutazione è un comando `bb` (valida input, logga, scrive solo nella
+directory progetto). Bash libero escluso dal flow. Lettura completa
+consentita. Audit trail: append-only in project.json + log comandi.

@@ -27,6 +27,10 @@ per progetto, niente scritture libere.
 
 - [Verifica E2E capacità attuali](tickets/verifica-e2e-capacita.md): TUI linguaggio naturale esiste; il flow autonomo progetto NON esiste — primitive sì, orchestrazione no
 - [Research: scopes senza auth](tickets/research-scopes-senza-auth.md): API H1 richiede auth SEMPRE (401 su tutti gli endpoint senza token) — sync via API = token obbligatorio; fallback public = scrape pagina + warning
+- [Struttura directory progetto](tickets/struttura-directory-progetto.md): OPZIONE 1A — root ~/bugbounty/<programma>/ con project/program/accounts.json + crawls//reports/; scritture solo via comandi bb
+- [Intercettazione programma](tickets/intercettazione-programma.md): OPZIONE A — LLM riconosce intenzione, conferma HITL su programma nuovo, esecuzione solo via comandi bb
+- [Sandbox scritture](tickets/sandbox-scritture.md): OPZIONE A — nel flow bb l'LLM non ha strumenti di scrittura libera; tutto via comandi bb; lettura completa ok
+- [Credenziali H1 sync](tickets/credenziali-h1-sync.md): RIMANDATO (non prioritario) — resta task utente quando serve il sync via API
 
 ## Not yet specified
 
