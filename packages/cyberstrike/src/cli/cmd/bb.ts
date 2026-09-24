@@ -30,6 +30,50 @@ import { syncProgram } from "@cyberstrike-io/hackbrowser/sync"
 import { UI } from "../ui"
 import { spawn } from "node:child_process"
 
+/**
+ * Validate HackerOne API credentials against a read-only endpoint.
+ *
+ * The endpoint is /v1/hackers/programs (the programs the token can see), not
+ * /v1/me: HackerOne documents /v1/me but it answers 401 for personal hacker
+ * tokens (verified — only org/admin tokens resolve there). It is still the
+ * cheapest honest check: 200 proves the credential pair works.
+ *
+ * `username` is the H1 username from step 1. Personal tokens use it AS the
+ * identifier, so when the given identifier is rejected we retry once with the
+ * username — the historically most common cause of a bogus 401 is pasting the
+ * token value into the identifier field.
+ */
+async function validateH1Api(
+  identifier: string,
+  token: string,
+  username?: string,
+): Promise<{ ok: boolean; status: number; usedIdentifier: string }> {
+  const attempt = async (id: string) => {
+    const res = await fetch("https://api.hackerone.com/v1/hackers/programs?page%5Bsize%5D=1", {
+      headers: {
+        authorization: `Basic ${Buffer.from(`${id}:${token}`).toString("base64")}`,
+        accept: "application/json",
+      },
+    })
+    return res.status
+  }
+
+  const status = await attempt(identifier)
+  if (status !== 401) return { ok: true, status, usedIdentifier: identifier }
+
+  if (username && username !== identifier) {
+    const retry = await attempt(username)
+    if (retry !== 401) return { ok: true, status: retry, usedIdentifier: username }
+  }
+  return { ok: false, status, usedIdentifier: identifier }
+}
+
+/** Mask a secret for display: first 7 chars + ellipsis + last 3. */
+function maskSecret(value: string): string {
+  if (value.length <= 12) return "…"
+  return `${value.slice(0, 7)}…${value.slice(-3)}`
+}
+
 function printProgramInfo(config: BountyProgramConfig) {
   console.log(`\n🎯 Bug Bounty Program: ${config.name}`)
   console.log(`   Platform: ${config.platform || "custom"}`)
@@ -85,8 +129,11 @@ export const BBCommand = cmd({
           y
             .option("username", { type: "string", describe: "skip the prompt for username" })
             .option("base-email", { type: "string", describe: "skip the prompt for base email" })
-            .option("api-identifier", { type: "string", describe: "skip the prompt for API identifier" })
-            .option("api-token", { type: "string", describe: "skip the prompt for API token" })
+            .option("api-identifier", {
+              type: "string",
+              describe: "API username, only if it differs from your H1 username (defaults to it)",
+            })
+            .option("api-token", { type: "string", describe: "HackerOne API token value (the secret)" })
             .option("reset", { type: "boolean", describe: "start over even if already connected" })
             .option("cancel", { type: "boolean", describe: "alias for --reset semantics cleanup" })
             .example("$0 bb connect", "run the interactive wizard"),
@@ -99,7 +146,9 @@ export const BBCommand = cmd({
             console.log(`\n👤 Already connected:`)
             console.log(`   Username: ${existing!.h1_username ?? "(not set)"}`)
             console.log(`   Base email: ${existing!.base_email ?? "(not set)"}`)
-            console.log(`   API: ${existing!.api_identifier ? `${existing!.api_identifier} + token` : "(not set)"}`)
+            console.log(
+              `   API: ${existing!.api_token ? `${existing!.api_identifier ?? existing!.h1_username ?? "?"} + ${maskSecret(existing!.api_token)}` : "(not set)"}`,
+            )
             console.log(`\nOptions:`)
             console.log(`   • cyberstrike bb whoami            — view details again`)
             console.log(`   • cyberstrike bb connect --reset   — start over (clears and re-asks)`)
@@ -113,7 +162,7 @@ export const BBCommand = cmd({
           // ---- Step 1: username (HITL, confirm/cancel per step) ----
           creds.h1_username =
             args.username ??
-            (await UI.input(`Step 1/3 — HackerOne username (what programs see; empty = skip): `))
+            (await UI.input(`Step 1/2 — HackerOne username (what programs see): `))
           if (creds.h1_username && !/^[a-zA-Z0-9_-]{2,40}$/.test(creds.h1_username)) {
             UI.error("Invalid username (allowed: letters, digits, _ and -; 2-40 chars).")
             process.exit(1)
@@ -124,38 +173,45 @@ export const BBCommand = cmd({
           const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
           creds.base_email =
             args["base-email"] ??
-            (await UI.input(`Step 2/3 — Base email for program aliases (empty = skip): `))
+            (await UI.input(`Step 2/2 — Base email for program aliases (empty = skip): `))
           if (creds.base_email && !emailRe.test(creds.base_email)) {
             UI.error(`Invalid email: ${creds.base_email}`)
             process.exit(1)
           }
           console.log(`   → base email: ${creds.base_email || "(skipped)"}  [OK]  (Annulla: Ctrl+C)`)
 
-          // ---- Step 3: API token (optional; validated live) ----
-          const wantApi =
-            args["api-identifier"] ?? args["api-token"] ?? (await UI.input(`Step 3/3 — API token identifier (empty = skip API setup): `))
-          if (wantApi || args["api-token"]) {
-            creds.api_identifier = args["api-identifier"] ?? wantApi!
+          // ---- Step 3: API access ----
+          //
+          // On HackerOne the API is authenticated with HTTP Basic where the
+          // USERNAME is the identifier and the TOKEN is the value. For a
+          // personal (hacker) token the identifier IS the H1 username, so
+          // asking for it again is a duplicate of step 1 — the default path
+          // skips it entirely and reuses the username. Only accounts holding
+          // an explicitly-named org/admin token (or a hunter who generated a
+          // token with a custom identifier) need a different one, and that is
+          // what --api-identifier is for.
+          if (args["api-identifier"] || args["api-token"]) {
+            creds.api_identifier = args["api-identifier"] ?? creds.h1_username
             creds.api_token =
-              args["api-token"] ?? (await UI.input(`          API token (shown once on H1; input hidden not supported — paste now): `))
+              args["api-token"] ?? (await UI.input(`Step 3/3 — API token value (shown once on H1; paste now): `))
             if (!creds.api_identifier || !creds.api_token) {
               UI.error("Both identifier and token are required for API access. Nothing saved.")
               process.exit(1)
             }
-            console.log("   🔐 Validating against HackerOne…")
-            const res = await fetch("https://api.hackerone.com/v1/hackers/programs/bcny/structured_scopes?page%5Bsize%5D=1", {
-              headers: {
-                authorization: `Basic ${Buffer.from(`${creds.api_identifier}:${creds.api_token}`).toString("base64")}`,
-                accept: "application/json",
-              },
-            })
-            if (res.status === 401) {
-              UI.error("API credentials REJECTED (401). Nothing saved.")
+            const result = await validateH1Api(creds.api_identifier, creds.api_token, creds.h1_username)
+            if (!result.ok) {
+              UI.error(`API credentials REJECTED (${result.status}). Nothing saved.`)
+              console.log(`\n   The identifier is the API username — NOT the token value.`)
+              console.log(`   For a personal token the identifier is your H1 username (${creds.h1_username ?? "?"}).`)
               process.exit(1)
             }
-            console.log(`   → API: ${creds.api_identifier} + token  [OK${res.status === 403 ? " — valid, bcny non accessibile (normale)" : ""}]`)
+            if (result.usedIdentifier !== creds.api_identifier) {
+              creds.api_identifier = result.usedIdentifier
+              console.log(`   → identifier "${args["api-identifier"]}" rejected; using your H1 username instead`)
+            }
+            console.log(`   → API: ${creds.api_identifier} + token  [OK]`)
           } else {
-            console.log("   → API: (skipped — needed only for private programs / hacktivity)")
+            console.log("   → API: (no token given — sync still works for public programs)")
           }
 
           saveHunterCredentials(creds as never)
@@ -192,7 +248,10 @@ export const BBCommand = cmd({
           console.log(`\n👤 Hunter identity (~/.cyberstrike/bugbounty/credentials.json):`)
           console.log(`   Username: ${creds.h1_username ?? "(not set)"}`)
           console.log(`   Base email: ${creds.base_email ?? "(not set)"}`)
-          console.log(`   API: ${creds.api_identifier ? `${creds.api_identifier} + token` : "(not set)"}`)
+          // Never echo the token: mask it so a screen share / log paste cannot leak it.
+          console.log(
+            `   API: ${creds.api_token ? `${creds.api_identifier ?? creds.h1_username ?? "?"} + ${maskSecret(creds.api_token)}` : "(not set)"}`,
+          )
         },
       )
       .command(
