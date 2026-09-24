@@ -88,22 +88,73 @@ export const BBCommand = cmd({
             })
             .option("api-identifier", {
               type: "string",
-              describe: "HackerOne API token identifier (for future bb sync; optional)",
+              describe: "HackerOne API token identifier (for program invitations + hacktivity via REST API)",
             })
             .option("api-token", {
               type: "string",
-              describe: "HackerOne API token (for future bb sync; optional)",
+              describe: "HackerOne API token — validated against the live API before saving",
+            })
+            .option("base-email", {
+              type: "string",
+              describe: "your real mailbox, e.g. you@gmail.com (base for program plus-aliases)",
             }),
         async (args) => {
           const creds = loadHunterCredentials() ?? {}
           if (args.username) creds.h1_username = args.username
+          if (args["base-email"]) creds.base_email = args["base-email"]
           if (args["api-identifier"]) creds.api_identifier = args["api-identifier"]
           if (args["api-token"]) creds.api_token = args["api-token"]
+
+          // Validate API credentials when provided: probe a read endpoint that
+          // requires auth. 200 → real token; 401 → refuse to save (typo guard).
+          if (args["api-identifier"] || args["api-token"]) {
+            if (!creds.api_identifier || !creds.api_token) {
+              UI.error("Both --api-identifier and --api-token are required to use the API.")
+              process.exit(1)
+            }
+            console.log("\n🔐 Validating API credentials against HackerOne…")
+            const res = await fetch("https://api.hackerone.com/v1/hackers/programs/bcny/structured_scopes?page%5Bsize%5D=1", {
+              headers: {
+                authorization: `Basic ${Buffer.from(`${creds.api_identifier}:${creds.api_token}`).toString("base64")}`,
+                accept: "application/json",
+              },
+            })
+            if (res.status === 401) {
+              UI.error("API credentials REJECTED (401). No changes saved.")
+              console.log("   Check token identifier + value at https://hackerone.com/settings — tokens show once.")
+              process.exit(1)
+            }
+            if (res.status === 403) {
+              // Valid token, but bcny not accessible for this account — token works.
+              console.log("   ✅ Credentials accepted (403 on bcny = valid token, program not accessible — normal).")
+            } else if (res.ok) {
+              console.log("   ✅ Credentials accepted (live API responded).")
+            } else {
+              console.log(`   ⚠️ Unexpected status ${res.status} — saving anyway (API may be rate-limiting).`)
+            }
+          }
+
           saveHunterCredentials(creds)
           console.log(`\n✅ Hunter identity saved to ~/.cyberstrike/bugbounty/credentials.json (chmod 600)`)
           console.log(`   Username: ${creds.h1_username ?? "(not set)"}`)
+          console.log(`   Base email: ${creds.base_email ?? "(not set)"}`)
           console.log(`   API token: ${creds.api_token ? "(set)" : "(not set)"}`)
-          console.log(`\n💡 New programs added with 'bb add' will default to this identity.`)
+        },
+      )
+      .command(
+        "whoami",
+        "show the saved hunter identity",
+        () => {},
+        async () => {
+          const creds = loadHunterCredentials()
+          if (!creds) {
+            console.log("\nNo identity saved. Run: cyberstrike bb connect --username <h1-username>")
+            return
+          }
+          console.log(`\n👤 Hunter identity (~/.cyberstrike/bugbounty/credentials.json):`)
+          console.log(`   Username: ${creds.h1_username ?? "(not set)"}`)
+          console.log(`   Base email: ${creds.base_email ?? "(not set)"}`)
+          console.log(`   API: ${creds.api_identifier ? `${creds.api_identifier} + token` : "(not set)"}`)
         },
       )
       .command(
