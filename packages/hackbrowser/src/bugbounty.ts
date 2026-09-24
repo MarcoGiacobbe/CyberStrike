@@ -228,6 +228,8 @@ export interface HunterCredentials {
   h1_username?: string;
   api_identifier?: string;
   api_token?: string;
+  // Hunter's real mailbox — base for program-specific plus-aliases (bb mail).
+  base_email?: string;
 }
 
 function credentialsPath(): string {

@@ -14,6 +14,13 @@ import {
   saveHunterCredentials,
   type BountyProgramConfig,
 } from "@cyberstrike-io/hackbrowser/bugbounty"
+import {
+  h1Alias,
+  generatePassword,
+  policyFromConstraints,
+  loadAccounts,
+  saveAccount,
+} from "@cyberstrike-io/hackbrowser/bbmail"
 import { UI } from "../ui"
 import { spawn } from "node:child_process"
 
@@ -92,6 +99,81 @@ export const BBCommand = cmd({
           console.log(`   Username: ${creds.h1_username ?? "(not set)"}`)
           console.log(`   API token: ${creds.api_token ? "(set)" : "(not set)"}`)
           console.log(`\n💡 New programs added with 'bb add' will default to this identity.`)
+        },
+      )
+      .command(
+        "mail <action> <program>",
+        "registration emails: generate alias + compliant password (step 2 = human reads the code from their inbox)",
+        (y) =>
+          y
+            .positional("action", {
+              type: "string",
+              demandOption: true,
+              choices: ["new", "list"],
+              describe: "new = generate alias+password and store it; list = show stored accounts",
+            })
+            .positional("program", { type: "string", demandOption: true })
+            .option("base-email", {
+              type: "string",
+              describe: "your real mailbox, e.g. you@gmail.com (saved globally on first use)",
+            })
+            .option("min-length", { type: "number", describe: "site password minimum length" })
+            .option("max-length", { type: "number", describe: "site password maximum length" })
+            .option("target", {
+              type: "string",
+              describe: "optional note: which target/app this account is for",
+            }),
+        async (args) => {
+          if (args.action === "list") {
+            const accounts = loadAccounts(args.program)
+            if (accounts.length === 0) {
+              console.log(`\nNo accounts stored for '${args.program}'. Create one with: bb mail new ${args.program}`)
+              return
+            }
+            console.log(`\n📨 Accounts for ${args.program}:`)
+            for (const a of accounts) {
+              console.log(`   • ${a.email}  ${a.verified ? "✅ verified" : "(unverified)"}${a.target ? `  [${a.target}]` : ""}`)
+            }
+            return
+          }
+
+          // action === "new"
+          let emailBase = args["base-email"]
+          if (!emailBase) {
+            // Global base saved on first use: ~/.cyberstrike/bugbounty/credentials.json .base_email
+            const saved = loadHunterCredentials()?.base_email
+            if (!saved) {
+              UI.error("No base email known. Pass --base-email you@gmail.com once — it is saved for future runs.")
+              process.exit(1)
+            }
+            emailBase = saved
+          }
+          const credsFile = loadHunterCredentials()
+          if (args["base-email"] && credsFile && credsFile.base_email !== emailBase) {
+            saveHunterCredentials({ ...credsFile, base_email: emailBase })
+          }
+          const username = credsFile?.h1_username
+          if (!username) {
+            UI.error("No HackerOne username configured. Run: cyberstrike bb connect --username <your-h1-username>")
+            process.exit(1)
+          }
+
+          const email = h1Alias({ base: emailBase!, username, program: args.program })
+          const policy = policyFromConstraints(
+            [args["min-length"] && `minlength:${args["min-length"]}`, args["max-length"] && `maxlength:${args["max-length"]}`]
+              .filter(Boolean)
+              .join(" "),
+          )
+          const password = generatePassword(policy)
+          saveAccount(args.program, { email, password, target: args.target, createdAt: new Date().toISOString() })
+
+          console.log(`\n📧 Registration credentials for ${args.program}:`)
+          console.log(`   Email:    ${email}`)
+          console.log(`   Password: ${password}`)
+          console.log(`\n📋 Step 2 (human): sign up on the target with the email above.`)
+          console.log(`   Verification mail lands in YOUR inbox (${emailBase}) — read the`)
+          console.log(`   code/link there and complete it; the agent asks you when needed.`)
+          console.log(`\n💾 Stored in ~/.cyberstrike/bugbounty/${args.program}.accounts.json (chmod 600)`)
         },
       )
       .command(
