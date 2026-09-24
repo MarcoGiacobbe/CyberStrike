@@ -106,9 +106,11 @@ export class BugBountyManager {
    */
   listPrograms(): string[] {
     // Programs are stored as flat <name>.json files — not directories.
+    // Reserved names belong to infrastructure, not programs.
+    const RESERVED = /^(credentials|[^.]*\.accounts)$/;
     return fs
       .readdirSync(this.programsDir)
-      .filter((e) => e.endsWith(".json"))
+      .filter((e) => e.endsWith(".json") && !RESERVED.test(e.replace(/\.json$/, "")))
       .map((e) => e.replace(/\.json$/, ""));
   }
 
