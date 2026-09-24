@@ -8,10 +8,11 @@
 //   cyberstrike bb crawl google --target https://accounts.google.com
 
 import { cmd } from "./cmd"
-import { getBugBountyManager } from "@cyberstrike-io/hackbrowser/bugbounty"
+import { getBugBountyManager, type BountyProgramConfig } from "@cyberstrike-io/hackbrowser/bugbounty"
 import { UI } from "../ui"
+import { spawn } from "node:child_process"
 
-function printProgramInfo(config: any) {
+function printProgramInfo(config: BountyProgramConfig) {
   console.log(`\n🎯 Bug Bounty Program: ${config.name}`)
   console.log(`   Platform: ${config.platform || "custom"}`)
   if (config.programUrl) console.log(`   URL: ${config.programUrl}`)
@@ -120,9 +121,9 @@ export const BBCommand = cmd({
 
           // TODO: Actually scrape the bug bounty program URL for scope/payouts/rules
           // For now, create a basic config that user can edit
-          const config = {
+          const config: BountyProgramConfig = {
             name: args.program,
-            platform: args.platform,
+            platform: args.platform as BountyProgramConfig["platform"],
             programUrl: args.url,
             description: args.description,
             scope: {
@@ -219,15 +220,15 @@ export const BBCommand = cmd({
           }
           if (args.headfull) hackArgs.push("--headfull")
 
-          // Spawn hackbrowser subprocess
-          const { spawn } = require("child_process")
-          const cyberstrikePath = require("@stdlib/path").join(__dirname, "../../..", "cyberstrike")
-          const child = spawn(process.argv[0], [cyberstrikePath, ...hackArgs], {
+          // Spawn the cyberstrike hackbrowser subcommand in a subprocess.
+          // process.argv[1] is the entry script (bun src/index.ts) or the
+          // compiled binary itself — works in both dev and --compile builds.
+          const child = spawn(process.argv[0]!, [process.argv[1]!, ...hackArgs], {
             stdio: "inherit",
           })
 
-          child.on("close", (code) => {
-            process.exit(code)
+          child.on("close", (code: number | null) => {
+            process.exit(code ?? 1)
           })
         },
       ),
