@@ -15,6 +15,7 @@ import { Flag } from "@/flag/flag.ts"
 import { Shell } from "@/shell/shell"
 
 import { BashArity } from "@/permission/arity"
+import { classify, pathCandidates } from "@/permission/project"
 import { Truncate } from "./truncation"
 import { Plugin } from "@/plugin"
 
@@ -106,6 +107,10 @@ export const BashTool = Tool.define("bash", async () => {
       if (!Instance.containsPath(cwd)) directories.add(cwd)
       const patterns = new Set<string>()
       const always = new Set<string>()
+      // percorsi non risolvibili staticamente ($VAR, backtick) e comandi opachi
+      // (python3 -c ...): entrambi non decidibili -> conferma esplicita
+      const unresolved = new Set<string>()
+      const opaque = new Set<string>()
 
       for (const node of tree.rootNode.descendantsOfType("command")) {
         if (!node) continue
@@ -129,10 +134,34 @@ export const BashTool = Tool.define("bash", async () => {
           command.push(child.text)
         }
 
-        // not an exhaustive list, but covers most common cases
-        if (["cd", "rm", "cp", "mv", "mkdir", "touch", "chmod", "chown", "cat"].includes(command[0])) {
-          for (const arg of command.slice(1)) {
-            if (arg.startsWith("-") || (command[0] === "chmod" && arg.startsWith("+"))) continue
+        // Classificazione del comando (perimetro bug bounty):
+        //   read-only -> nessun controllo
+        //   write     -> il path viene risolto e confrontato col perimetro
+        //   opaque    -> scrittura non ispezionabile -> conferma
+        //   unknown   -> non classificato -> conferma
+        // I nodi `file_redirect` (`echo x > /tmp/y`) contano come scrittura a
+        // prescindere dal comando: il path è strutturale, non testuale.
+        const name = command[0]
+        const kind = classify(name)
+        const redirects =
+          node.parent?.type === "redirected_statement" ? node.parent.descendantsOfType("file_redirect") : []
+
+        if (kind === "write" || redirects.length > 0) {
+          const candidates = name ? pathCandidates(name, command) : []
+
+          // i redirect dichiarano il path esplicitamente
+          for (const redirect of redirects) {
+            if (!redirect) continue
+            const target = redirect.descendantsOfType("word")[0]?.text ?? redirect.child(1)?.text
+            if (target && !target.startsWith("$")) candidates.push(target)
+          }
+
+          for (const arg of candidates) {
+            if (arg.startsWith("$") || arg.startsWith("`")) {
+              // path non risolvibile staticamente: non si può decidere, si chiede
+              unresolved.add(arg)
+              continue
+            }
             const resolved = await $`realpath ${arg}`
               .cwd(cwd)
               .quiet()
@@ -152,6 +181,12 @@ export const BashTool = Tool.define("bash", async () => {
               }
             }
           }
+        }
+
+        if (kind === "opaque") {
+          // scrittura non ispezionabile staticamente (`python3 -c "open(...)"`):
+          // non si rileva il path, si manda il comando in conferma.
+          opaque.add(commandText)
         }
 
         // cd covered by above check
@@ -177,6 +212,21 @@ export const BashTool = Tool.define("bash", async () => {
           patterns: Array.from(patterns),
           always: Array.from(always),
           metadata: {},
+        })
+      }
+
+      // Comandi a scrittura opaca (`python3 -c "open('/tmp/x','w')"`) o con
+      // path non risolvibile staticamente (`echo x > $VAR`): non si può sapere
+      // se e dove scrivono, quindi NON passano in silenzio. La conferma è
+      // distinta dalle altre così l'utente vede esattamente perché.
+      if (opaque.size > 0 || unresolved.size > 0) {
+        await ctx.ask({
+          permission: "bash_unresolved",
+          patterns: Array.from(opaque).concat(Array.from(unresolved)),
+          always: Array.from(opaque).map((c) => BashArity.prefix(c.split(/\s+/)).join(" ") + " *"),
+          metadata: {
+            reason: "command may write outside the project without a statically detectable path",
+          },
         })
       }
 

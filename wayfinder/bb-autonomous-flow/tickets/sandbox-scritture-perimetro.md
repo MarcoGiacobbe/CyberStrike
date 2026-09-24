@@ -1,6 +1,62 @@
 # Ticket: perimetro di scrittura confinato al progetto (sandbox)
 
-## Stato: PROGETTATO, pronto per implementazione in 2 fasi (2026-09-24)
+## Stato: FASE 1 IMPLEMENTATA E VERIFICATA (2026-09-24)
+
+Modulo `packages/cyberstrike/src/permission/project.ts` + classi A/B/C in
+`bash.ts`. 71 test verdi (unit + E2E con Instance reale), typecheck 11/11.
+
+### Cosa esiste ora
+
+- `classify(name)` → `read-only | write | opaque | unknown` con precedenza
+  **OPAQUE > WRITE > READ_ONLY** (un comando in più liste è trattato nel modo
+  più restrittivo)
+- `pathCandidates(name, args)` → i path su cui il comando scrive, con tre
+  semantiche di flag distinte (`writeFlags` introduce un path, `inPlaceFlags`
+  lo attiva soltanto, `keyValueFlags` è `of=/x`)
+- `ProjectPerimeter.diagnose(dir)` → `no-repo | project-in-repo |
+  project-is-repo-root` con messaggio d'avviso
+- `ProjectPerimeter.buildProjectRuleset(dir, worktree)` → il ruleset
+- `isSafe(diagnosis)` → rifiuta il caso radice-di-repo
+- `bash.ts`: nodi `file_redirect` letti da tree-sitter, comandi opachi →
+  `ctx.ask({permission:"bash_unresolved"})`, path con `$VAR` → stessa conferma
+
+### Difetti trovati scrivendo i test (e corretti)
+
+1. **`find` era nella lista read-only** — ma `find / -delete` cancella file e
+   `-exec` esegue qualunque cosa. Rimosso. Regola generale documentata nel
+   modulo: un comando va in READ_ONLY solo se NON esiste una sua invocazione
+   che scrive.
+2. **`sed -i` trattato come flag che introduce un path** — produceva
+   `["s/a/b/", "/etc/hosts"]`, cioè un candidato fantasma (l'espressione di
+   sed) su cui poi girava un `realpath`. Separati `writeFlags` e `inPlaceFlags`.
+3. **`dd of=/tmp/x` raccoglieva anche `if=` e `bs=`** — un candidato che non è
+   un path. Aggiunto `keyValueFlags`.
+4. **L'argomento consumato da un flag veniva raccolto due volte** (`curl -o
+   /tmp/out` dava `/tmp/out` duplicato). Aggiunto `i++`.
+5. **Il pattern relativo con `rel === ""` produceva `/*`**, che non matcha
+   nulla: il perimetro negava anche l'interno. (Il caso resta comunque
+   rifiutato da `diagnose()`: vedi sotto.)
+
+### Sulla sicurezza del caso "progetto = radice di un repo" — VERIFICATO
+
+Non è aggirabile con un pattern migliore. Misurato con `Wildcard.match`:
+
+```
+pattern relativo "*"   -> matcha "state.json"  E  "../../../etc/passwd"
+pattern relativo "/*"  -> non matcha NESSUNO dei due
+```
+
+Non esiste forma relativa che distingua interno ed esterno. Da qui il rifiuto
+in `diagnose()`: il caso non va "gestito", va impedito.
+
+### Cosa NON è ancora verificato
+
+- **E2E dentro una sessione reale** con l'agente che tenta davvero una
+  scrittura fuori progetto: richiede `bb hunt` (ticket #4), che non esiste
+  ancora. I test attuali esercitano `Instance` + `PermissionNext.evaluate` +
+  i pattern veri dei tool, ma non il ciclo completo tool→sessione→DB.
+- L'attrito reale di `bash` (quante conferme riceve l'utente in un hunting
+  vero): si misura solo con l'uso.
 
 ---
 
