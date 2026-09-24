@@ -315,7 +315,11 @@ export namespace Config {
 
   export async function installDependencies(dir: string) {
     const pkg = path.join(dir, "package.json")
-    const targetVersion = Installation.isLocal() ? "*" : Installation.VERSION
+    // Dev/builds from a non-release branch bake a "0.0.0-<branch>" VERSION that
+    // doesn't exist on npm — the plugin must come from the local workspace ("*").
+    const targetVersion = Installation.isLocal() || Installation.VERSION.startsWith("0.0.0-")
+      ? "*"
+      : Installation.VERSION
 
     const json = await Bun.file(pkg)
       .json()
@@ -374,7 +378,9 @@ export namespace Config {
     const depVersion = dependencies["@cyberstrike-io/plugin"]
     if (!depVersion) return true
 
-    const targetVersion = Installation.isLocal() ? "latest" : Installation.VERSION
+    const targetVersion = Installation.isLocal() || Installation.VERSION.startsWith("0.0.0-")
+      ? "latest"
+      : Installation.VERSION
     if (targetVersion === "latest") {
       const isOutdated = await PackageRegistry.isOutdated("@cyberstrike-io/plugin", depVersion, dir)
       if (!isOutdated) return false
