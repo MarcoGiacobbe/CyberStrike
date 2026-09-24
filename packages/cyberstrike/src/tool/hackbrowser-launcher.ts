@@ -247,6 +247,7 @@ async function prepareCrawl(opts: LauncherOptions): Promise<PreparedWorker> {
     sessionID: opts.sessionID,
     scope: opts.scope,
     exclude: opts.exclude,
+    bugbountyProgram: opts.bugbountyProgram,
     steps: opts.steps,
     headless: opts.headless ?? true,
     panel: opts.headless === false,

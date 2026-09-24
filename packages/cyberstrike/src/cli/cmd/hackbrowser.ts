@@ -65,6 +65,7 @@ export const HackbrowserCommand = cmd({
         sessionID,
         scope: args.scope,
         exclude: args.exclude,
+        bugbountyProgram: args.bugbountyProgram,
         steps: args.steps,
         credentials,
         headless: credentials.length > 0 ? false : !args.headfull,

@@ -308,6 +308,7 @@ function buildCrawlOptions(opts: WorkerOptions, signal: AbortSignal): CrawlOptio
     sessionID: opts.sessionID,
     scope: opts.scope,
     exclude: opts.exclude,
+    bugbountyProgram: opts.bugbountyProgram,
     steps: opts.steps,
     headless: opts.headless,
     panel: opts.panel,
