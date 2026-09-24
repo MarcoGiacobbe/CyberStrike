@@ -29,6 +29,7 @@ import {
 } from "./ingest.ts"
 import { loadSession, autoLogin, handle2FA, waitForManualLogin } from "./auth.ts"
 import { resolveModel, planPage, planUnexploredElements, isAuthError } from "./navigator.ts"
+import { resolveFieldValue } from "./accounts.ts"
 // Bug bounty program context for the planner prompt — set by run() from
 // AgentConfig.bugbounty_config, read by every planPage call inside this module.
 // Module-level because explorePageWithAI's signature is already at capacity
@@ -1255,7 +1256,19 @@ async function executeFormTask(
     }
 
     const action = fieldAction(field.role)
-    const value = action === "click" ? undefined : field.value
+    // Bug bounty autonomous registration: replace AUTO_ACCOUNT markers (and
+    // empty email/password fields) with generated, tracked credentials. The
+    // LLM never sees or invents real credentials — it only emits the markers
+    // when it identifies a signup form (per the bb prompt directives).
+    const rawValue = action === "click" ? undefined : field.value
+    const value =
+      rawValue === undefined
+        ? undefined
+        : resolveFieldValue(
+            { label: field.label, type: el.type, value: rawValue },
+            bbContext?.name ?? "",
+            new URL(pageUrl).host,
+          )
     const key = `${el.selector}::${action}::${value ?? ""}`
     if (semanticActionsDone.has(key)) continue
 

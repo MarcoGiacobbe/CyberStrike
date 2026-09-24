@@ -290,5 +290,17 @@ Focus on high-impact vulnerabilities that are likely to be paid:
 
 Avoid low-impact findings: missing headers, info disclosure, cookie flags.
 
+### Registration Forms (Signup)
+When a form is clearly a REGISTRATION/SIGNUP form (fields like email +
+password + "sign up"/"register"/"create account"), plan filling it:
+- email field value: exactly the literal marker AUTO_ACCOUNT_EMAIL
+- password field value: exactly the literal marker AUTO_ACCOUNT_PASSWORD
+- fill other fields conservatively: username may reuse AUTO_ACCOUNT_EMAIL,
+  checkboxes for terms/age: check them, optional marketing checkboxes: skip
+- never invent a real email or password — the system substitutes the
+  markers with per-program credentials automatically
+- SKIP entirely if the form asks for payment data, phone numbers, or
+  government IDs — those are never automated
+
 ## IMPORTANT
 Always respond with a valid JSON object. If there is nothing to explore, return: {"tasks":[]}

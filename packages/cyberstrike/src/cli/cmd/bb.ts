@@ -21,6 +21,10 @@ import {
   loadAccounts,
   saveAccount,
 } from "@cyberstrike-io/hackbrowser/bbmail"
+import {
+  loadManagedAccounts,
+  setAccountStatus,
+} from "@cyberstrike-io/hackbrowser/accounts"
 import { UI } from "../ui"
 import { spawn } from "node:child_process"
 
@@ -174,6 +178,48 @@ export const BBCommand = cmd({
           console.log(`   Verification mail lands in YOUR inbox (${emailBase}) — read the`)
           console.log(`   code/link there and complete it; the agent asks you when needed.`)
           console.log(`\n💾 Stored in ~/.cyberstrike/bugbounty/${args.program}.accounts.json (chmod 600)`)
+        },
+      )
+      .command(
+        "accounts <action> <program>",
+        "manage autonomously-created target accounts (approve after you verified the email)",
+        (y) =>
+          y
+            .positional("action", {
+              type: "string",
+              demandOption: true,
+              choices: ["list", "approve", "disable"],
+              describe: "list = show accounts; approve/disable = set status",
+            })
+            .positional("program", { type: "string", demandOption: true })
+            .option("email", { type: "string", describe: "account email (required for approve/disable)" }),
+        async (args) => {
+          if (args.action === "list") {
+            const accounts = loadManagedAccounts(args.program)
+            if (accounts.length === 0) {
+              console.log(`\nNo managed accounts for '${args.program}' yet. They are created automatically when the crawler fills a signup form (bb connect required).`)
+              return
+            }
+            console.log(`\n👤 Managed accounts for ${args.program}:`)
+            for (const a of accounts) {
+              const icon = a.status === "approved" ? "✅" : a.status === "pending" ? "⏳" : "🚫"
+              console.log(`   ${icon} ${a.email}  [${a.status}]${a.target ? ` → ${a.target}` : ""}  created ${a.createdAt.slice(0, 10)}`)
+            }
+            console.log(`\nApprove after verifying the email: bb accounts approve ${args.program} --email <email>`)
+            return
+          }
+          if (!args.email) {
+            UI.error(`--email is required for '${args.action}'`)
+            process.exit(1)
+          }
+          const status = args.action === "approve" ? "approved" : "disabled"
+          const ok = setAccountStatus(args.program, args.email, status)
+          if (!ok) {
+            UI.error(`Account ${args.email} not found for program '${args.program}'`)
+            process.exit(1)
+          }
+          console.log(`\n${status === "approved" ? "✅" : "🚫"} ${args.email} → ${status}`)
+          if (status === "approved") console.log("   The crawler can now reuse this account for login flows.")
         },
       )
       .command(
