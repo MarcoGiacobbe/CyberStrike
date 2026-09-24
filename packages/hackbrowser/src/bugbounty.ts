@@ -240,6 +240,11 @@ function credentialsPath(): string {
   );
 }
 
+/** Filesystem path of the credentials file (for CLI remove flows). */
+export function credentialsFilePath(): string {
+  return credentialsPath();
+}
+
 /** Load global hunter credentials, or null when `bb connect` was never run. */
 export function loadHunterCredentials(): HunterCredentials | null {
   const p = credentialsPath();

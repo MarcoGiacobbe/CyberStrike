@@ -12,6 +12,7 @@ import {
   getBugBountyManager,
   loadHunterCredentials,
   saveHunterCredentials,
+  credentialsFilePath,
   type BountyProgramConfig,
 } from "@cyberstrike-io/hackbrowser/bugbounty"
 import {
@@ -79,40 +80,69 @@ export const BBCommand = cmd({
     yargs
       .command(
         "connect",
-        "save your HackerOne identity (username + optional API credentials)",
+        "interactive wizard: save your HackerOne identity (username, base email, API token)",
         (y) =>
           y
-            .option("username", {
-              type: "string",
-              describe: "your HackerOne username (used to disclose automated traffic per program rules)",
-            })
-            .option("api-identifier", {
-              type: "string",
-              describe: "HackerOne API token identifier (for program invitations + hacktivity via REST API)",
-            })
-            .option("api-token", {
-              type: "string",
-              describe: "HackerOne API token — validated against the live API before saving",
-            })
-            .option("base-email", {
-              type: "string",
-              describe: "your real mailbox, e.g. you@gmail.com (base for program plus-aliases)",
-            }),
+            .option("username", { type: "string", describe: "skip the prompt for username" })
+            .option("base-email", { type: "string", describe: "skip the prompt for base email" })
+            .option("api-identifier", { type: "string", describe: "skip the prompt for API identifier" })
+            .option("api-token", { type: "string", describe: "skip the prompt for API token" })
+            .option("reset", { type: "boolean", describe: "start over even if already connected" })
+            .option("cancel", { type: "boolean", describe: "alias for --reset semantics cleanup" })
+            .example("$0 bb connect", "run the interactive wizard"),
         async (args) => {
-          const creds = loadHunterCredentials() ?? {}
-          if (args.username) creds.h1_username = args.username
-          if (args["base-email"]) creds.base_email = args["base-email"]
-          if (args["api-identifier"]) creds.api_identifier = args["api-identifier"]
-          if (args["api-token"]) creds.api_token = args["api-token"]
+          const existing = loadHunterCredentials()
+          const connected = !!existing && (!!existing.h1_username || !!existing.base_email || !!existing.api_token)
 
-          // Validate API credentials when provided: probe a read endpoint that
-          // requires auth. 200 → real token; 401 → refuse to save (typo guard).
-          if (args["api-identifier"] || args["api-token"]) {
+          // Already connected → show details, offer cancel/update, no re-entry.
+          if (connected && !args.reset) {
+            console.log(`\n👤 Already connected:`)
+            console.log(`   Username: ${existing!.h1_username ?? "(not set)"}`)
+            console.log(`   Base email: ${existing!.base_email ?? "(not set)"}`)
+            console.log(`   API: ${existing!.api_identifier ? `${existing!.api_identifier} + token` : "(not set)"}`)
+            console.log(`\nOptions:`)
+            console.log(`   • cyberstrike bb whoami            — view details again`)
+            console.log(`   • cyberstrike bb connect --reset   — start over (clears and re-asks)`)
+            console.log(`   • cyberstrike bb disconnect        — remove saved identity`)
+            return
+          }
+
+          console.log(`\n🔐 Bug Bounty Connect — configure your Hunter identity\n`)
+          const creds: Record<string, string> = { ...(existing ?? {}) }
+
+          // ---- Step 1: username (HITL, confirm/cancel per step) ----
+          creds.h1_username =
+            args.username ??
+            (await UI.input(`Step 1/3 — HackerOne username (what programs see; empty = skip): `))
+          if (creds.h1_username && !/^[a-zA-Z0-9_-]{2,40}$/.test(creds.h1_username)) {
+            UI.error("Invalid username (allowed: letters, digits, _ and -; 2-40 chars).")
+            process.exit(1)
+          }
+          console.log(`   → username: ${creds.h1_username || "(skipped)"}  [OK]  (Annulla: Ctrl+C)`)
+
+          // ---- Step 2: base email ----
+          const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
+          creds.base_email =
+            args["base-email"] ??
+            (await UI.input(`Step 2/3 — Base email for program aliases (empty = skip): `))
+          if (creds.base_email && !emailRe.test(creds.base_email)) {
+            UI.error(`Invalid email: ${creds.base_email}`)
+            process.exit(1)
+          }
+          console.log(`   → base email: ${creds.base_email || "(skipped)"}  [OK]  (Annulla: Ctrl+C)`)
+
+          // ---- Step 3: API token (optional; validated live) ----
+          const wantApi =
+            args["api-identifier"] ?? args["api-token"] ?? (await UI.input(`Step 3/3 — API token identifier (empty = skip API setup): `))
+          if (wantApi || args["api-token"]) {
+            creds.api_identifier = args["api-identifier"] ?? wantApi!
+            creds.api_token =
+              args["api-token"] ?? (await UI.input(`          API token (shown once on H1; input hidden not supported — paste now): `))
             if (!creds.api_identifier || !creds.api_token) {
-              UI.error("Both --api-identifier and --api-token are required to use the API.")
+              UI.error("Both identifier and token are required for API access. Nothing saved.")
               process.exit(1)
             }
-            console.log("\n🔐 Validating API credentials against HackerOne…")
+            console.log("   🔐 Validating against HackerOne…")
             const res = await fetch("https://api.hackerone.com/v1/hackers/programs/bcny/structured_scopes?page%5Bsize%5D=1", {
               headers: {
                 authorization: `Basic ${Buffer.from(`${creds.api_identifier}:${creds.api_token}`).toString("base64")}`,
@@ -120,25 +150,33 @@ export const BBCommand = cmd({
               },
             })
             if (res.status === 401) {
-              UI.error("API credentials REJECTED (401). No changes saved.")
-              console.log("   Check token identifier + value at https://hackerone.com/settings — tokens show once.")
+              UI.error("API credentials REJECTED (401). Nothing saved.")
               process.exit(1)
             }
-            if (res.status === 403) {
-              // Valid token, but bcny not accessible for this account — token works.
-              console.log("   ✅ Credentials accepted (403 on bcny = valid token, program not accessible — normal).")
-            } else if (res.ok) {
-              console.log("   ✅ Credentials accepted (live API responded).")
-            } else {
-              console.log(`   ⚠️ Unexpected status ${res.status} — saving anyway (API may be rate-limiting).`)
-            }
+            console.log(`   → API: ${creds.api_identifier} + token  [OK${res.status === 403 ? " — valid, bcny non accessibile (normale)" : ""}]`)
+          } else {
+            console.log("   → API: (skipped — needed only for private programs / hacktivity)")
           }
 
-          saveHunterCredentials(creds)
-          console.log(`\n✅ Hunter identity saved to ~/.cyberstrike/bugbounty/credentials.json (chmod 600)`)
-          console.log(`   Username: ${creds.h1_username ?? "(not set)"}`)
-          console.log(`   Base email: ${creds.base_email ?? "(not set)"}`)
-          console.log(`   API token: ${creds.api_token ? "(set)" : "(not set)"}`)
+          saveHunterCredentials(creds as never)
+          console.log(`\n✅ Identity saved to ~/.cyberstrike/bugbounty/credentials.json (chmod 600)`)
+          console.log(`\nNext: cyberstrike bb sync <handle>   — fetch a public program`)
+          console.log(`      cyberstrike bb whoami          — view saved identity`)
+        },
+      )
+      .command(
+        "disconnect",
+        "remove the saved hunter identity",
+        () => {},
+        async () => {
+          const p = credentialsFilePath()
+          const { unlinkSync, existsSync } = await import("fs")
+          if (!existsSync(p)) {
+            console.log("\nNothing to remove — no identity saved.")
+            return
+          }
+          unlinkSync(p)
+          console.log("\n🗑️  Identity removed (~/.cyberstrike/bugbounty/credentials.json).")
         },
       )
       .command(
