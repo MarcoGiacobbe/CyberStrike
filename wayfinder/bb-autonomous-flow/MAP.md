@@ -30,7 +30,8 @@ per progetto, niente scritture libere.
 - [Struttura directory progetto](tickets/struttura-directory-progetto.md): OPZIONE 1A — root ~/bugbounty/<programma>/ con project/program/accounts.json + crawls//reports/; scritture solo via comandi bb
 - [Intercettazione programma](tickets/intercettazione-programma.md): OPZIONE A — LLM riconosce intenzione, conferma HITL su programma nuovo, esecuzione solo via comandi bb
 - [Sandbox scritture](tickets/sandbox-scritture.md): OPZIONE A — nel flow bb l'LLM non ha strumenti di scrittura libera; tutto via comandi bb; lettura completa ok
-- [Credenziali H1 sync](tickets/credenziali-h1-sync.md): RIMANDATO (non prioritario) — resta task utente quando serve il sync via API
+- [Credenziali H1 sync](tickets/credenziali-h1-sync.md): RISOLTO (2026-09-24) — l'identifier dell'API è lo username H1, non il valore del token (`markjacob9:<token>` → HTTP 200). `bb connect` ridotto a 2 passi, auto-retry con username, token mascherato in `whoami`. Commit `7fa7f8fee`
+- [Identity da policy](tickets/identity-da-policy.md): APERTO (2026-09-24) — `resolveIdentity()` pronta e verificata ma `cfg.identity` non viene mai popolato: `bb sync` lo conserva soltanto. Serve derivare header/UA dalle direttive del programma. Caso di test utile: programma HackerOne `security` (chiede header custom), NON bcny (non lo chiede)
 
 ## Not yet specified
 
