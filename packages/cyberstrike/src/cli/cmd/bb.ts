@@ -25,6 +25,7 @@ import {
   loadManagedAccounts,
   setAccountStatus,
 } from "@cyberstrike-io/hackbrowser/accounts"
+import { syncProgram } from "@cyberstrike-io/hackbrowser/sync"
 import { UI } from "../ui"
 import { spawn } from "node:child_process"
 
@@ -178,6 +179,27 @@ export const BBCommand = cmd({
           console.log(`   Verification mail lands in YOUR inbox (${emailBase}) — read the`)
           console.log(`   code/link there and complete it; the agent asks you when needed.`)
           console.log(`\n💾 Stored in ~/.cyberstrike/bugbounty/${args.program}.accounts.json (chmod 600)`)
+        },
+      )
+      .command(
+        "sync <program>",
+        "fetch live program data (scope, payouts, rules) from HackerOne — no token needed for public programs",
+        (y) =>
+          y.positional("program", { type: "string", demandOption: true, describe: "HackerOne handle, e.g. bcny" }),
+        async (args) => {
+          console.log(`\n🔄 Syncing '${args.program}' from HackerOne…`)
+          try {
+            const r = await syncProgram(args.program)
+            console.log(`✅ ${r.name} (@${args.program})`)
+            console.log(`   In scope (${r.inScope.length}): ${r.inScope.join(", ") || "—"}`)
+            if (r.outScope.length) console.log(`   Out of scope (${r.outScope.length}): ${r.outScope.join(", ")}`)
+            console.log(`   Bounty table rows: ${r.bountyAssets} assets | policy: ${r.rulesChars} chars`)
+            console.log(`   Saved to ~/.cyberstrike/bugbounty/${args.program}.json (+ .policy.md)`)
+            console.log(`\n▶ Ready: cyberstrike bb info ${args.program} | cyberstrike bb crawl ${args.program}`)
+          } catch (err) {
+            UI.error(`Sync failed: ${err instanceof Error ? err.message : err}`)
+            process.exit(1)
+          }
         },
       )
       .command(
