@@ -1952,7 +1952,7 @@ async function runMultiCredential(config: AgentConfig, credentials: CredentialCo
   const lastAuthHeaders = new Map<string, Record<string, string>>()
 
   for (const [credIndex, cred] of credentials.entries()) {
-    const browserContext = await browser.newContext(Stealth.contextOptions(config.headless ?? false))
+    const browserContext = await browser.newContext(Stealth.contextOptions(config.headless ?? false, config.identity))
     await browserContext.addInitScript(Stealth.INIT_SCRIPT)
     if (panelOn) await browserContext.addInitScript(PANEL_INIT_SCRIPT)
     const page = await browserContext.newPage()
@@ -2415,7 +2415,7 @@ export async function run(config: AgentConfig): Promise<CrawlResult> {
 
   const browser = await Stealth.connect({ cdp: config.cdp, headless: config.headless ?? false })
   const health = createBrowserHealth()
-  const context: BrowserContext = await browser.newContext(Stealth.contextOptions(config.headless ?? false))
+  const context: BrowserContext = await browser.newContext(Stealth.contextOptions(config.headless ?? false, config.identity))
   await context.addInitScript(Stealth.INIT_SCRIPT)
   if (panelOn) await context.addInitScript(PANEL_INIT_SCRIPT)
   const page = await context.newPage()

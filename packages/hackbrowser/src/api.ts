@@ -113,6 +113,28 @@ export type { CrawlResult, CSEvent } from "./types.ts"
 const log = Log.create({ service: "hackbrowser:api" })
 
 /**
+ * Derive the hunter identity (UA + disclosure headers) from a bug bounty
+ * program config. Programs require identification in different ways: some
+ * want the username in the User-Agent, some a custom header — configure
+ * exactly what the program's policy asks, and it is applied from the FIRST
+ * request of every crawl (Playwright context-level, covers navigation + XHR).
+ */
+export function resolveIdentity(cfg: BountyProgramConfig | null): {
+  userAgent?: string
+  extraHeaders?: Record<string, string>
+} {
+  const id = cfg?.identity
+  if (!id?.h1_username) return {}
+  const ua = (id.user_agent_template ?? "CyberStrike-BB/1.0 (H1: {username})").replaceAll(
+    "{username}",
+    id.h1_username,
+  )
+  const headers: Record<string, string> = {}
+  if (id.header_name) headers[id.header_name] = id.h1_username
+  return { userAgent: ua, extraHeaders: headers }
+}
+
+/**
  * Verify the chromium browser binary is installed. INTEGRATION.md §10.7
  * (Seçenek A — manual install) — clear error message pointing the user
  * at Playwright's own install CLI. We deliberately don't ship an
@@ -271,6 +293,7 @@ export async function runCrawl(opts: CrawlOptions): Promise<CrawlResult> {
     // the placeholders). Data comes from the local program JSON for now — will
     // carry real HackerOne-scraped data once bb sync lands (see BUG_BOUNTY_PLAN.md).
     bugbounty_config: bbConfig ?? undefined,
+    identity: resolveIdentity(bbConfig),
   }
 
   try {

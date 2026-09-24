@@ -8,7 +8,12 @@
 //   cyberstrike bb crawl google --target https://accounts.google.com
 
 import { cmd } from "./cmd"
-import { getBugBountyManager, type BountyProgramConfig } from "@cyberstrike-io/hackbrowser/bugbounty"
+import {
+  getBugBountyManager,
+  loadHunterCredentials,
+  saveHunterCredentials,
+  type BountyProgramConfig,
+} from "@cyberstrike-io/hackbrowser/bugbounty"
 import { UI } from "../ui"
 import { spawn } from "node:child_process"
 
@@ -60,6 +65,35 @@ export const BBCommand = cmd({
   describe: "manage bug bounty programs",
   builder: (yargs) =>
     yargs
+      .command(
+        "connect",
+        "save your HackerOne identity (username + optional API credentials)",
+        (y) =>
+          y
+            .option("username", {
+              type: "string",
+              describe: "your HackerOne username (used to disclose automated traffic per program rules)",
+            })
+            .option("api-identifier", {
+              type: "string",
+              describe: "HackerOne API token identifier (for future bb sync; optional)",
+            })
+            .option("api-token", {
+              type: "string",
+              describe: "HackerOne API token (for future bb sync; optional)",
+            }),
+        async (args) => {
+          const creds = loadHunterCredentials() ?? {}
+          if (args.username) creds.h1_username = args.username
+          if (args["api-identifier"]) creds.api_identifier = args["api-identifier"]
+          if (args["api-token"]) creds.api_token = args["api-token"]
+          saveHunterCredentials(creds)
+          console.log(`\n✅ Hunter identity saved to ~/.cyberstrike/bugbounty/credentials.json (chmod 600)`)
+          console.log(`   Username: ${creds.h1_username ?? "(not set)"}`)
+          console.log(`   API token: ${creds.api_token ? "(set)" : "(not set)"}`)
+          console.log(`\n💡 New programs added with 'bb add' will default to this identity.`)
+        },
+      )
       .command(
         "list",
         "list all bug bounty programs",
@@ -115,7 +149,19 @@ export const BBCommand = cmd({
               choices: ["hackerone", "bugcrowd", "intigriti", "custom"],
               describe: "bug bounty platform",
             })
-            .option("description", { type: "string", describe: "program description" }),
+            .option("description", { type: "string", describe: "program description" })
+            .option("h1-username", {
+              type: "string",
+              describe: "username to disclose in this program's traffic (defaults to bb connect identity)",
+            })
+            .option("header-name", {
+              type: "string",
+              describe: 'custom header the program requires, e.g. "X-Hunter-Id" (empty = none)',
+            })
+            .option("ua-template", {
+              type: "string",
+              describe: 'User-Agent template with {username}, e.g. "my-bot/1.0 (+H1:{username})"',
+            }),
         async (args) => {
           const bb = getBugBountyManager()
 
@@ -144,9 +190,27 @@ export const BBCommand = cmd({
             lastUpdated: new Date().toISOString(),
           }
 
+          // Identity: explicit flags win, otherwise default from bb connect.
+          // The identity is configured at ADD time, taken from what the
+          // program's policy asks for, and applied from the first request.
+          const global = loadHunterCredentials()
+          const username = args["h1-username"] ?? global?.h1_username
+          if (username) {
+            config.identity = {
+              h1_username: username,
+              ...(args["header-name"] ? { header_name: args["header-name"] } : {}),
+              ...(args["ua-template"] ? { user_agent_template: args["ua-template"] } : {}),
+            }
+          }
+
           bb.addProgram(args.program, config)
           console.log(`\n✅ Added bug bounty program: ${args.program}`)
           console.log(`   Config saved to ~/.cyberstrike/bugbounty/${args.program}.json`)
+          if (config.identity) {
+            console.log(`   Identity: H1:${config.identity.h1_username}${config.identity.header_name ? ` + header ${config.identity.header_name}` : ""}`)
+          } else {
+            console.log(`   Identity: none (set with 'bb connect' or 'bb add --h1-username')`)
+          }
           console.log("\n💡 Edit the config file to set scope, payouts, and rules:")
           console.log(`   $ nano ~/.cyberstrike/bugbounty/${args.program}.json`)
         },

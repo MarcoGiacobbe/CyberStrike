@@ -64,6 +64,21 @@ export interface BountyProgramConfig {
     password: string;
   };
 
+  // Hunter identity — disclosed automation per program rules. When a program's
+  // policy asks to identify automated traffic (e.g. "include your H1 username
+  // in the User-Agent" or a custom header), configure it here; the crawler
+  // applies it from the FIRST request of every crawl of this program.
+  identity?: {
+    // HackerOne username (or any platform handle) to disclose
+    h1_username?: string;
+    // Custom header name the program requires (e.g. "X-HackerOne-Username").
+    // Omit when the program only asks for UA disclosure.
+    header_name?: string;
+    // UA template with {username} placeholder. Default when omitted:
+    // "CyberStrike-BB/1.0 (H1: {username})"
+    user_agent_template?: string;
+  };
+
   // Metadata
   lastUpdated?: string;
   description?: string;
@@ -202,4 +217,41 @@ export function getBugBountyManager(): BugBountyManager {
     bbManager = new BugBountyManager();
   }
   return bbManager;
+}
+
+// ============================================================
+// Global hunter credentials (~/.cyberstrike/bugbounty/credentials.json)
+// ============================================================
+
+/** Shape of the global credentials file written by `bb connect`. */
+export interface HunterCredentials {
+  h1_username?: string;
+  api_identifier?: string;
+  api_token?: string;
+}
+
+function credentialsPath(): string {
+  return path.join(
+    process.env.CYBERSTRIKE_HOME || path.join(os.homedir(), ".cyberstrike"),
+    "bugbounty",
+    "credentials.json",
+  );
+}
+
+/** Load global hunter credentials, or null when `bb connect` was never run. */
+export function loadHunterCredentials(): HunterCredentials | null {
+  const p = credentialsPath();
+  if (!fs.existsSync(p)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8")) as HunterCredentials;
+  } catch {
+    return null;
+  }
+}
+
+/** Save global hunter credentials with owner-only permissions (chmod 600). */
+export function saveHunterCredentials(creds: HunterCredentials): void {
+  const p = credentialsPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(creds, null, 2), { mode: 0o600 });
 }
