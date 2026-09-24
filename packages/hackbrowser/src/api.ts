@@ -68,6 +68,9 @@ export interface CrawlOptions {
   bugbountyProgram?: string
   // Inline bug bounty program config (overrides loaded file)
   bugbountyConfig?: BountyProgramConfig
+  // Hunter identity (UA + disclosure headers) — resolved by the caller from
+  // the program config, or passed pre-resolved (worker subprocess path).
+  identity?: { userAgent?: string; extraHeaders?: Record<string, string> }
 
   // Crawl behavior
   steps?: number
@@ -293,7 +296,9 @@ export async function runCrawl(opts: CrawlOptions): Promise<CrawlResult> {
     // the placeholders). Data comes from the local program JSON for now — will
     // carry real HackerOne-scraped data once bb sync lands (see BUG_BOUNTY_PLAN.md).
     bugbounty_config: bbConfig ?? undefined,
-    identity: resolveIdentity(bbConfig),
+    // Explicit opts.identity (e.g. pre-resolved by the launcher for the worker
+    // subprocess) wins; otherwise derive it from the loaded program config.
+    identity: opts.identity ?? resolveIdentity(bbConfig),
   }
 
   try {

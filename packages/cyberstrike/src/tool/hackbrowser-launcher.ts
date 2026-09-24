@@ -41,6 +41,35 @@ import type {
   ParentMessage,
   CredentialDispatch,
 } from "../hackbrowser-subprocess/worker-ipc"
+import { getBugBountyManager } from "@cyberstrike-io/hackbrowser/bugbounty"
+
+/**
+ * Resolve the hunter identity (UA + disclosure headers) for the requested
+ * bug bounty program so the worker subprocess receives it ready-made in
+ * WorkerOptions — the parent loads the program JSON once here (it already
+ * has filesystem access and the @cyberstrike-io/hackbrowser import).
+ */
+function resolveWorkerIdentity(bugbountyProgram?: string): WorkerOptions["identity"] {
+  if (!bugbountyProgram) return undefined
+  try {
+    const bb = getBugBountyManager()
+    bb.loadProgram(bugbountyProgram)
+    const cfg = bb.getProgramConfig()
+    const id = cfg?.identity
+    if (!id?.h1_username) return undefined
+    const ua = (id.user_agent_template ?? "CyberStrike-BB/1.0 (H1: {username})").replaceAll(
+      "{username}",
+      id.h1_username,
+    )
+    return {
+      userAgent: ua,
+      extraHeaders: id.header_name ? { [id.header_name]: id.h1_username } : {},
+    }
+  } catch (err) {
+    log.warn("failed to resolve bug bounty identity", { program: bugbountyProgram, err: String(err) })
+    return undefined
+  }
+}
 
 const log = Log.create({ service: "hackbrowser-launcher" })
 
@@ -248,6 +277,7 @@ async function prepareCrawl(opts: LauncherOptions): Promise<PreparedWorker> {
     scope: opts.scope,
     exclude: opts.exclude,
     bugbountyProgram: opts.bugbountyProgram,
+    identity: resolveWorkerIdentity(opts.bugbountyProgram),
     steps: opts.steps,
     headless: opts.headless ?? true,
     panel: opts.headless === false,
