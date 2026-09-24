@@ -52,6 +52,41 @@ che questi placeholder vengano popolati con i dati REALI estratti dalle pagine
 SCOPE / KNOWN ISSUES / REGOLE / BOUNTY del programma, e valutare se servono
 nuovi placeholder (es. regole del programma, asset out-of-scope espliciti).
 
+**HackerOne auth (verificato sui docs, 2026-09-24):** la Hacker API usa HTTP
+Basic Auth con API token personale (Settings → API Tokens, anche su Community
+gratuita). NIENTE OAuth. Endpoint utili:
+- `GET /v1/hackers/programs` — lista programmi
+- `GET /v1/hackers/programs/{handle}` — policy (= regole)
+- `GET /v1/hackers/programs/{handle}/structured_scopes` — scope + eligible_for_bounty
+- Hacktivity filtrato per handle — known issues pubbliche
+Rate limit: 600 read/min (structured_scopes: 50/min).
+
+## Test Results (2026-09-24, sessione di test completa)
+
+Setup: app locale su localhost:4545 (3 pagine + 2 form POST) e programma
+`bbtest` con scope localhost. Driver: `packages/cyberstrike/bb-e2e-test.ts`.
+
+| Test | Esito | Evidenza |
+|---|---|---|
+| Unit test hackbrowser | ✅ 99/99 | bun test |
+| Typecheck | ✅ 11/11 | bun turbo typecheck |
+| CLI bb add/list/info/remove | ✅ | binario reale |
+| Flag --bugbounty-program | ✅ | help |
+| BrowserSkill wrapper (live) | ✅ | navigate/evaluate/snapshot su example.com |
+| E2E single-cred | ✅ | 4 pagine, plan 3 task, POST /api/subscribe + /api/search catturati, errors=[] |
+| Scope dal programma | ✅ | "applied bug bounty scope [\"*.localhost\"]" |
+| Validazione headless+multiCred | ✅ | rifiutato con messaggio corretto |
+| Multi-cred BFS + page-diff | ✅ strutturale | contexts=[admin,user], visitedBy, fingerprintMatch; poi stop per API key fittizia → errore propagato in errors[] (isAuthError OK) |
+| bb crawl via TUI | ⚠️ | gira ma il log è ANSI; usare bb-e2e-test.ts per verifiche |
+| Plan LLM con crediti | ✅ | 3 task su home; 402 solo dal proxy-agent CyberStrike (non nostro) |
+
+**Gap trovato:** `launchHackbrowser` ignora silenziosamente `multiCredentials`
+(non è in LauncherOptions) — il multi-cred funziona via `runCrawl` diretto ma
+non dal launcher TUI. Da aggiungere al launcher se serve multi-cred via TUI.
+
+**Nota credits:** OpenRouter senza crediti blocca il proxy-agent di CyberStrike
+(orchestratore), NON il planner hackbrowser (che usa il modello iniettato).
+
 ### Phase 3: BrowserSkill Integration
 - BrowserSkill as optional backend
 - Human-in-the-loop via BrowserSkill's request-help
