@@ -79,3 +79,89 @@ l'agente dichiara di aver testato X ma non c'è traccia di richieste su X):
    e il programma risincronizzato? (collegato a `lastUpdated` in `program.json`)
 6. Chi promuove una nota di `notes/` a fatto verificato — solo un comando, o
    anche l'utente a mano?
+---
+
+## Verifica tecnica propedeutica (2026-09-25)
+
+Fatti accertati con esecuzione reale, non dedotti:
+
+**Dove può vivere lo stato.** La directory scelta
+(`~/.cyberstrike/bugbounty/programs/<program>/`) **non è in un repo git** →
+`Instance.worktree` cade su `/`. Verificato: `diagnose` la classifica `no-repo`,
+`isSafe=true`, e i pattern coprono correttamente sia la forma relativa
+(`home/marco/.../bcny-test/*`, come la manda `write.ts`) sia quella assoluta
+(`/home/marco/.../bcny-test/*`, come la manda `external_directory`). Il caso
+`no-repo` è **sicuro**: il pattern relativo è la discesa completa dalla radice,
+quindi è ancorato e non c'è il problema "interno/esterno indistinguibili" del
+caso `project-is-repo-root`.
+
+**Meccanica del blocco todowrite.** `TodoWriteTool` (`src/tool/todo.ts:12`) fa
+`ctx.ask({permission:"todowrite", patterns:["*"], always:["*"]})` — cioè è la
+stessa forma `always:["*"]` del buco #2 del perimetro. Il tool **non** è
+bloccabile per-agente in modo condizionale: `agent.permission` è statica
+(`explore` usa `"*":"deny"` + allow). Quindi "l'agente non ha todowrite finché
+non ha caricato lo stato" NON si ottiene con la permission: serve un **gate nel
+tool** (`todo.ts`), non nel ruleset.
+
+Conseguenza per il design: il blocco va implementato come **guardia in
+`TodoWriteTool.execute`** che consulta lo stato di sessione (dove un flag
+"stato caricato" è settato dal tool che legge lo stato). Il ruleset resta come
+rinforzo, non come garanzia.
+
+## Risposte alle domande aperte
+
+1. **Forma dello stato**: `state.json` con **schema Zod versionato**
+   (`version: 1`). Zod è già la convenzione del repo (`Todo.Info`, `Request`,
+   `HackbrowserStatus.Info`). Migrazione: il loader legge `version`; se
+   sconosciuta → stato dichiarato invalido → blocco (mai reinterpretare).
+   Lo stato invalido non si "aggiusta a mano": si rigenera da `bb sync` +
+   derivazione.
+
+2. **Confine stato/programma**: `program.json` è **sovrascrivibile** (deriva dal
+   fetch, `bb sync` lo riscrive); `state.json` è **append-only per fatti** e non
+   viene mai toccato da `bb sync`. Il sync già preserva `identity` — stesso
+   pattern: il sync tocca solo le chiavi che deriva, non l'intero file. Da
+   rendere esplicito: `bb sync` scrive **solo** `program.json`, mai `state.json`.
+
+3. **Granularità dei target toccati**: per **host** (non per URL). Motivo: è la
+   granularità a cui lo scope è definito (gli asset in scope sono host/domini),
+   è quella che rende la derivazione economica, e "1 cosa o 30" si risolve
+   elencando gli host con i path toccati come dettaglio, non 30 voci piatte.
+   Struttura: `targets: { "host": { firstSeen, lastSeen, evidence: [...] } }`.
+
+4. **"Target toccato" fuori dal crawler** (curl/bash): è il buco nero. Decisione:
+   **non si inventa un fatto**. Un host toccato via bash/curl NON entra in
+   `state.json` (nessuna evidenza strutturata lo dimostra). Va in `notes/` come
+   narrazione. Se serve tracciarlo, la strada corretta è far passare il traffico
+   dal crawler (che lascia evidenza), non dedurlo. Questo mantiene la regola
+   "solo affermazioni dimostrabili".
+
+5. **Staleness**: `lastUpdated` in `program.json` + confronto con
+   `last_policy_change_at` di HackerOne (già disponibile dal GraphQL, oggi
+   scartato). Regola: se la policy è cambiata a monte (o `lastUpdated` > N
+   giorni), lo stato è **vecchio** e `bb hunt` invita a `bb sync` prima di
+   aprire la sessione. La soglia N è una costante da fissare (proposta: 7 giorni,
+   più il confronto col cambio policy che è autorevole).
+
+6. **Promozione nota → fatto**: **solo un comando**. L'utente può *chiedere* la
+   promozione, ma l'atto lo esegue un comando che pretende l'evidenza. Un LLM
+   (o l'utente a mano) che edita `state.json` direttamente rompe la garanzia:
+   lo stato è scrivibile solo da codice che valida.
+
+## Nota sul punto 4, che è il più delicato
+
+Il punto 4 non è un dettaglio implementativo: è dove il design può tradire il
+principio. Se "target toccato" includesse il traffico bash, lo stato tornerebbe
+a contenere affermazioni non dimostrabili — cioè esattamente ciò che questo
+ticket esiste per evitare. Meglio uno stato che sa meno ma non mente.
+
+## Punto aperto residuo
+
+Il gate todowrite richiede che il tool che **legge** lo stato setti un flag di
+sessione. Chi è quel tool? Due opzioni:
+- (a) un `bounty_status` tool dedicato, che l'agente DEVE chiamare;
+- (b) il caricamento automatico all'apertura sessione (`bb hunt`), senza tool.
+
+(b) è più solido (non dipende dall'agente) ma lega il gate a `bb hunt`.
+(a) è più flessibile (funziona anche fuori da `bb hunt`) ma reintroduce la
+dipendenza dal comportamento dell'agente. **Da decidere con l'utente.**
