@@ -63,10 +63,11 @@ describe("perimetro — l'utente non può rendere permanente un permesso oltre i
         await PermissionNext.reply({ requestID: "per_test_interno", reply: "always" })
         await primo
 
-        // 2) ora una scrittura FUORI: `ask` deve ancora lanciare DeniedError,
-        //    cioè il confine non è stato cancellato dall'always.
-        //    (ask lancia in modo sincrono, non ritorna una promise respinta)
-        expect(() =>
+        // 2) ora una scrittura FUORI: `ask` deve ancora rifiutare, cioè il
+        //    confine non è stato cancellato dall'always. `ask` NON lancia in
+        //    modo sincrono: ritorna una promise respinta — e `expect(() =>
+        //    promise).toThrow()` passa comunque a vuoto, quindi va atteso.
+        await expect(
           PermissionNext.ask({
             id: "per_test_esterno",
             sessionID,
@@ -76,7 +77,7 @@ describe("perimetro — l'utente non può rendere permanente un permesso oltre i
             metadata: {},
             ruleset,
           }),
-        ).toThrow(/prevents you from using/)
+        ).rejects.toThrow(/prevents you from using/)
 
         // 3) e una scrittura DENTRO deve continuare a passare senza ask
         await expect(
@@ -94,5 +95,76 @@ describe("perimetro — l'utente non può rendere permanente un permesso oltre i
         ).resolves.toBeUndefined()
       },
     })
+  })
+})
+describe("perimetro — V8.2: una concessione salvata non batte il deny", () => {
+  test("`approved` {edit,*,allow} su una permission NEGATA viene ignorata", async () => {
+    // Il canale interattivo filtrava i pattern `*`, ma `approved` è
+    // PERSISTITO su DB e riletto a ogni sessione: una riga {edit,*,allow}
+    // messa li' (o scritta a mano) scavalcava il deny con `findLast`.
+    // Il filtro ora sta in `evaluate`, quindi vale per OGNI canale.
+    const sessionID = "ses_seed_" + Math.random().toString(36).slice(2)
+    const ruleset = ProjectPerimeter.buildProjectRuleset("/tmp/GP/PROGETTO", "/tmp")
+
+    await Instance.provide({
+      directory: "/tmp/GP/PROGETTO",
+      fn: async () => {
+        await expect(
+          PermissionNext.ask({
+            id: "per_seed_edit",
+            sessionID,
+            permission: "edit",
+            patterns: ["/etc/passwd"],
+            always: ["*"],
+            metadata: {},
+            ruleset,
+          }),
+        ).rejects.toThrow()
+      },
+    })
+  })
+
+  test("`evaluate` ignora un allow che copre tutto quando esiste un deny", () => {
+    const ruleset = ProjectPerimeter.buildProjectRuleset("/tmp/GP/PROGETTO", "/tmp")
+    const seeded = [{ permission: "edit", pattern: "*", action: "allow" } as const]
+    expect(PermissionNext.evaluate("edit", "/etc/passwd", ruleset, seeded).action).toBe("deny")
+  })
+
+  test("controprova: FUORI perimetro una concessione ampia vale ancora", () => {
+    const seeded = [{ permission: "edit", pattern: "/tmp/*", action: "allow" } as const]
+    expect(PermissionNext.evaluate("edit", "/tmp/x.txt", [], seeded).action).toBe("allow")
+  })
+})
+
+describe("perimetro — V8.1: `always` di famiglia su un comando non apre il perimetro", () => {
+  test("un allow su `python3 *` non rende permanente la scrittura opaca", () => {
+    // `bash_unresolved` ha pattern che sono TESTO DI COMANDO, non path: una
+    // famiglia (`python3 *`) non è confinabile a una directory. Dopo un click
+    // "sempre" su un python3 innocuo, la scrittura fuori progetto non chiedeva
+    // piu' nulla. Il perimetro la mantiene in `ask`.
+    const ruleset = ProjectPerimeter.buildProjectRuleset("/tmp/GP/PROGETTO", "/tmp")
+    const seeded = [{ permission: "bash_unresolved", pattern: "python3 *", action: "allow" } as const]
+    const r = PermissionNext.evaluate("bash_unresolved", 'python3 -c "open(\'/etc/x\',\'w\')"', ruleset, seeded)
+    expect(r.action).toBe("ask")
+  })
+
+  test("controprova: FUORI perimetro la stessa concessione è rispettata", () => {
+    const seeded = [{ permission: "bash_unresolved", pattern: "python3 *", action: "allow" } as const]
+    expect(PermissionNext.evaluate("bash_unresolved", 'python3 -c "print(1)"', [], seeded).action).toBe("allow")
+  })
+})
+
+describe("perimetro — B14: progetto coincidente con la radice del repo", () => {
+  test("buildProjectRuleset rifiuta invece di emettere un pattern allow `/*`", () => {
+    // `path.relative(dir, dir)` = "": il pattern diventava "/*", che con
+    // Wildcard.match (`\/.*`) copre OGNI path assoluto, /etc/passwd incluso.
+    // Il vecchio test lo credeva inerte perché provava solo path relativi.
+    expect(() => ProjectPerimeter.buildProjectRuleset("/tmp/x", "/tmp/x")).toThrow(/cannot be perimetrated/)
+  })
+
+  test("l'attacco che prima riusciva: edit su path ASSOLUTO", () => {
+    const bad = ProjectPerimeter.buildProjectRuleset("/tmp/x", undefined)
+    // con worktree undefined il relativo NON è vuoto: il ruleset è valido
+    expect(PermissionNext.evaluate("edit", "/etc/passwd", bad).action).toBe("deny")
   })
 })

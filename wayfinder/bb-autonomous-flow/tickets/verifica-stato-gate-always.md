@@ -495,3 +495,46 @@ somigliano a campi del tool. Anche `asset: ""` diventa un target con host `""`
 | A4 | Invertire l'ordine markLoaded/read in `bounty-status.ts` | V9.1 |
 | A5 | Decidere contratto gate (lista tool vs rifiuto runtime) + rinforzo prompt | V9.2 |
 | A6 | Sanitizzare `hostOf` (newline, vuoti) | V9.3 |
+
+---
+
+# Esiti dei fix (implementati)
+
+Stato: **A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13 applicati**;
+B14 trovato e chiuso durante l'implementazione. Ogni chiusura ha un test di
+regressione nella stessa PR.
+
+| # | Esito | Prova |
+|---|---|---|
+| A1 (V8.1, V8.3) | La difesa si e' spostata da `reply` a **`evaluate`** (`voidsBoundary`): una concessione di FAMIGLIA (`python3 *`) su una permission a testo di comando non entra nella valutazione quando il ruleset e' perimetrato. Prima il click "sempre" non era armato perche' `perimetro` guardava solo i `deny`, e `bash`/`bash_unresolved` sono espressi come `ask` | `reproduce: python3 -c "open('/tmp/o','w')"` con `approved {bash_unresolved,python3 *,allow}` → **`ask`** (prima `allow`) · test in `perimeter-hardening.test.ts` |
+| A2 (V8.2) | `evaluate` scarta ogni `allow` che COPRE TUTTO su una permission che il ruleset nega (`coversEverything` via `Wildcard.match`). Il filtro sta dove ruleset e `approved` sono visibili INSIEME, quindi copre ogni canale: click, riga su DB, regola di config | `edit /etc/passwd` con `approved {edit,*,allow}` → **`deny`** (prima `allow`) · test dedicato |
+| A3 (V8.4) | Il test di regressione usava `expect(() => promise).toThrow()`, che passa a vuoto su una promise: **non aveva mai provato nulla**. Riscritto con `await expect(...).rejects.toThrow()` | il test ora fallisce davvero se la difesa e' spenta (verificato disattivandola) |
+| A4 (V9.1) | `markLoaded` spostato DOPO la lettura in `bounty-status.ts`; `refresh()` non inghiotte piu' `Unreadable` (discriminante = esistenza del FILE, non `exists()`) | stato `version: 999` → il default (`refresh: true`) **fallisce** e la fase dichiarata resta nel file; `todowrite` resta bloccato · 2 test in `bounty-gate.test.ts` |
+| A5 (V9.2) | Contratto deciso: **il tool MANCA** (non "rifiuta"). `resolveTools` toglie `todowrite` dalla lista finche' lo stato non e' caricato; e il gate interno **lancia** invece di ritornare un output "riuscito" (in `batch` contava come `successful`) | 3 test in `bounty-llm-gate.test.ts` + gate test aggiornati al contratto d'errore |
+| A6 (V9.3) | `hostOf` gia' sanitizzato (newline, vuoti, userinfo) — la verifica ha confermato | 3 test in `bounty-output-hardening.test.ts`, incluso `https://admin:s3cr3t@host` → `host` |
+| A7 (V9.1) | Vedi A4 (`refresh` distingue assente da illeggibile) | idem |
+| A8 (V9.?) | `bounty_status` chiama `divergences()` e le **mostra** con un avviso esplicito ("Do not trust the figures above") | test su stato che pecca per difetto |
+| A9 | Con `refresh: false` il confronto con l'evidenza avviene comunque: le cifre memorizzate non vengono presentate come fatti senza dirlo | incluso in A8 |
+| A10 (V9.4) | `isHuntingDir` ancorato alla base REALE (`BountyState.programsDir()`, da `$CYBERSTRIKE_HOME` o `~/.cyberstrike`): era un match per SOTTOSTRINGA, quindi una repo qualsiasi con una sottodirectory `bugbounty/programs/` veniva trattata come progetto (bloccata + `state.json` scritto dentro) | test B6: repo finta con quella sottodirectory → **`false`** |
+| A11 | `write()` rimuove il `.tmp` se il rename fallisce | covered |
+| A12 | Commenti/test corretti: il flag e' per **(sessione, directory)**, non "per-sessione" | commenti aggiornati |
+| A13 | `findings.total` = `new + approved + other` (i duplicati non gonfiano il totale, coerente con `Vulnerability.confirmed()`) | gia' presente |
+
+## B14 — NUOVO, trovato durante l'implementazione [GRAVE, chiuso]
+
+`buildProjectRuleset(dir, worktree)` con **`dir === worktree`** produceva
+`path.relative() === ""`, quindi il pattern allow diventava `"/*"`:
+
+```
+B14 dir==worktree -> [{edit,*,deny}, {edit,"/*",allow}, {edit,"/tmp/x/*",allow}]
+B14 edit("/etc/passwd") -> allow        # path ASSOLUTO: matcha "/*"
+```
+
+La configurazione e' gia' rifiutata da `diagnose()` (`risk:
+project-is-repo-root`), ma la funzione **non deve dipendere dal chiamante** per
+restare un confine. Ora lancia (`cannot be perimetrated`).
+
+Da notare il **test preesistente** (`project-perimeter.test.ts`): dichiarava
+che `"/*"` era inerte — e in effetti provava solo path RELATIVI
+(`"state.json"`). L'assertiva era vera e la conclusione falsa: l'attacco reale
+usa un path assoluto. Test riscritto sull'evidenza.

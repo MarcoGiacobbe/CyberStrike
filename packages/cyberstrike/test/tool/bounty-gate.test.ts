@@ -54,11 +54,10 @@ describe("gate todowrite — il tool manca finché lo stato non è caricato", ()
         const sid = (await Session.create({ title: "gate test" })).id
         const { ctx } = ctxFor(sid)
         const tool = await TodoWriteTool.init()
-        const res = await tool.execute({ todos: TODO }, ctx)
-
-        expect(res.title).toBe("blocked — load project state first")
-        expect(res.output).toContain("bounty_status")
-        expect(res.metadata.blockedBy).toBe("bounty-state-not-loaded")
+        // Il gate è un ERRORE, non un output: un risultato "riuscito" verrebbe
+        // contato come `successful` dentro `batch`, e l'agente non vedrebbe
+        // nulla di anormale. Il test verifica la forma che il gate deve avere.
+        await expect(tool.execute({ todos: TODO }, ctx)).rejects.toThrow(/bounty_status/)
         // e soprattutto: NIENTE è stato scritto nei todo
         expect(Todo.get(sid)).toEqual([])
       },
@@ -104,10 +103,8 @@ describe("gate todowrite — il tool manca finché lo stato non è caricato", ()
         const write = await TodoWriteTool.init()
         // a è sbloccata
         expect((await write.execute({ todos: TODO }, ctxFor(a).ctx)).title).toBe("1 todos")
-        // b no
-        expect((await write.execute({ todos: TODO }, ctxFor(b).ctx)).title).toBe(
-          "blocked — load project state first",
-        )
+        // b no: errore, non output
+        await expect(write.execute({ todos: TODO }, ctxFor(b).ctx)).rejects.toThrow(/non è disponibile/)
       },
     })
   })
@@ -196,6 +193,50 @@ describe("bounty_status — contenuto e derivazione", () => {
         const sid = (await Session.create({ title: "gate test" })).id
         const status = await BountyStatusTool.init()
         await expect(status.execute({ refresh: false }, ctxFor(sid).ctx)).rejects.toThrow(/versione dello stato/)
+      },
+    })
+  })
+})
+describe("B1 — uno stato illeggibile NON deve essere rigenerato in silenzio", () => {
+  test("il percorso REALE (refresh, default) fallisce invece di azzerare la fase", async () => {
+    // Il buco: `refresh()` inghiottiva l'errore di `read()` e ricreava lo stato
+    // da zero. Una fase dichiarata ("reporting") spariva e veniva presentata
+    // come `idle`, cioè uno stato inventato al posto di un errore. Il test
+    // precedente copriva `refresh:false`, che non è il default: la via che
+    // l'agente usa davvero non era verificata.
+    const dir = huntingDir()
+    fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({ version: 999, phase: "reporting" }))
+
+    await Instance.provide({
+      directory: dir,
+      fn: async () => {
+        const sid = (await Session.create({ title: "gate test" })).id
+        const status = await BountyStatusTool.init()
+        await expect(status.execute({}, ctxFor(sid).ctx)).rejects.toThrow(/versione dello stato/)
+        // e il file NON è stato sovrascritto con uno stato inventato
+        const raw = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8"))
+        expect(raw.version).toBe(999)
+        expect(raw.phase).toBe("reporting")
+      },
+    })
+  })
+
+  test("e la sessione NON viene sbloccata: todowrite resta bloccato", async () => {
+    // markLoaded veniva chiamato PRIMA di `read()`: il gate si apriva anche se
+    // lo stato non era mai stato servito. Ordine ora invertito.
+    const dir = huntingDir()
+    fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({ version: 999 }))
+
+    await Instance.provide({
+      directory: dir,
+      fn: async () => {
+        const sid = (await Session.create({ title: "gate test" })).id
+        const status = await BountyStatusTool.init()
+        await expect(status.execute({}, ctxFor(sid).ctx)).rejects.toThrow()
+
+        const write = await TodoWriteTool.init()
+        await expect(write.execute({ todos: TODO }, ctxFor(sid).ctx)).rejects.toThrow(/non è disponibile/)
+        expect(Todo.get(sid)).toEqual([])
       },
     })
   })

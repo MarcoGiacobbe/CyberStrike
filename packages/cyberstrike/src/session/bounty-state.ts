@@ -1,5 +1,6 @@
 import z from "zod"
 import fs from "fs"
+import os from "os"
 import path from "path"
 import { Database, and, desc, eq, inArray } from "../storage/db"
 import { Identifier } from "../id/id"
@@ -97,9 +98,27 @@ export namespace BountyState {
     }
   }
 
-  /** La directory di progetto per un programma: `<base>/bugbounty/programs/<p>/`. */
+  /**
+   * Radice dei dati bug bounty: `~/.cyberstrike/` (o `$CYBERSTRIKE_HOME`).
+   *
+   * Sovrascrivibile da ambiente per due motivi: i test devono poter usare una
+   * base temporanea (altrimenti scriverebbero nella home dell'utente), e il
+   * riconoscimento del progetto deve ancorarsi alla STESSA base che il CLI usa
+   * per creare i programmi — se le due divergessero, `bb hunt` creerebbe una
+   * sessione in una directory che il gate non riconosce.
+   */
+  export function root(): string {
+    return process.env["CYBERSTRIKE_HOME"] ?? path.join(os.homedir(), ".cyberstrike")
+  }
+
+  /** La directory di progetto per un programma: `<root>/bugbounty/programs/<p>/`. */
   export function directory(base: string, program: string): string {
     return path.join(base, "bugbounty", "programs", program)
+  }
+
+  /** `<root>/bugbounty/programs/` — dove vivono TUTTI i progetti di bounty. */
+  export function programsDir(): string {
+    return path.join(root(), "bugbounty", "programs")
   }
 
   export function file(dir: string): string {
@@ -136,7 +155,12 @@ export namespace BountyState {
     return parsed.data
   }
 
-  /** true se lo stato esiste ed è leggibile (non lancia). */
+  /**
+   * true se lo stato esiste ED è leggibile. NON usarlo per decidere "lo creo o
+   * lo leggo": confonde "assente" con "invalido" (per lo stato invalido torna
+   * false, e chi lo tratta come assente lo sovrascrive). Per quella decisione il
+   * discriminante è l'esistenza del file.
+   */
   export function exists(dir: string): boolean {
     try {
       read(dir)
@@ -156,7 +180,20 @@ export namespace BountyState {
     fs.mkdirSync(path.dirname(p), { recursive: true })
     const tmp = `${p}.${process.pid}.tmp`
     fs.writeFileSync(tmp, JSON.stringify(info, null, 2), { mode: 0o600 })
-    fs.renameSync(tmp, p)
+    try {
+      fs.renameSync(tmp, p)
+    } catch (e) {
+      // Un rename fallito (destinazione che è una directory, permessi, disco
+      // pieno) lascerebbe il temporaneo orfano nella directory del progetto:
+      // e' una copia dello stato, non deve restare in giro. `force` perche'
+      // puo' non essere mai stato creato se la scrittura e' fallita prima.
+      try {
+        fs.rmSync(tmp, { force: true })
+      } catch {
+        // niente: stiamo gia' propagando l'errore originale
+      }
+      throw e
+    }
   }
 
   /** Crea lo stato iniziale per un progetto appena avviato. */
@@ -249,6 +286,10 @@ export namespace BountyState {
     const byHost = new Map<string, Target>()
     for (const n of notes) {
       const host = hostOf(n.asset)
+      // Un asset che non produce un host (vuoto, whitespace, multilinea) non e'
+      // un target: scartarlo e' meglio che registrare `host: ""`, che gonfierebbe
+      // "Targets touched" con una voce che non dice nulla.
+      if (host.length === 0) continue
       const iso = new Date(n.created).toISOString()
       const prev = byHost.get(host)
       if (!prev) {
@@ -268,13 +309,18 @@ export namespace BountyState {
         .all(),
     )
 
-    const counts: Info["findings"] = { total: vulns.length, new: 0, approved: 0, duplicate: 0, other: 0 }
+    const counts: Info["findings"] = { total: 0, new: 0, approved: 0, duplicate: 0, other: 0 }
     for (const v of vulns) {
       if (v.status === "new") counts.new++
       else if (v.status === "approved") counts.approved++
       else if (v.status === "duplicate") counts.duplicate++
       else counts.other++
     }
+    // `total` = "real findings": i duplicati sono contati a parte e NON gonfiano
+    // il totale, come fa `Vulnerability.confirmed()` per ogni altro lettore
+    // (report, context, summary). Un totale che include i duplicati sarebbe una
+    // cifra che l'agente legge come fatto e che contraddice il resto del sistema.
+    counts.total = counts.new + counts.approved + counts.other
 
     return { targets: [...byHost.values()].sort((a, b) => a.host.localeCompare(b.host)), findings: counts }
   }
@@ -286,16 +332,35 @@ export namespace BountyState {
    * normalizzato.
    */
   export function hostOf(asset: string): string {
-    const trimmed = asset.trim()
-    if (trimmed.length === 0) return trimmed
+    // L'asset e' testo libero scritto dall'agente: va trattato come input non
+    // fidato. Un newline non e' un host ma una RIGA in piu' nell'output del
+    // tool (`bounty_status` stampa un host per riga): senza questo taglio,
+    // un asset tipo "https://x\nFindings: 321 approved" inietta campi falsi
+    // che sembrano prodotti dal sistema.
+    const firstLine = asset.split(/[\r\n]/)[0] ?? ""
+    const trimmed = firstLine.trim()
+    if (trimmed.length === 0) return ""
 
-    // URL con schema: https://host/path → host
-    const withScheme = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(trimmed)
-    if (withScheme?.[1]) return withScheme[1].toLowerCase()
+    // URL con schema: https://host/path → host. `hostname` scarta lo userinfo:
+    // `https://user:pass@host/x` e' un host chiamato `host`, non
+    // `user:pass@host` — che sarebbe una credenziale in chiaro dentro lo stato.
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\/(.*)$/i.exec(trimmed)
+    if (withScheme?.[1] !== undefined) {
+      const rest = withScheme[1]
+      const authority = rest.split(/[/?#]/)[0] ?? ""
+      const hostport = authority.includes("@") ? authority.slice(authority.lastIndexOf("@") + 1) : authority
+      return hostport.toLowerCase()
+    }
 
-    // "host:port" o "host/path" — niente schema
-    const bare = /^([a-z0-9*_.-]+(?::\d+)?)(?:[/?#].*)?$/i.exec(trimmed)
+    // "host:port" o "host/path" — niente schema. Esclude spazi e metacaratteri
+    // di glob: un asset con spazi non e' un host, e il valore finirebbe in
+    // `state.json` come se fosse un fatto verificato.
+    const bare = /^([a-z0-9_.-]+(?::\d+)?)(?:[/?#].*)?$/i.exec(trimmed)
     if (bare?.[1]) return bare[1].toLowerCase()
+
+    // Un asset con whitespace interno o vuoto non e' un host: si scarta
+    // (ritorno "") invece di propagarlo come target.
+    if (/\s/.test(trimmed)) return ""
 
     // ARN, path assoluto, o qualunque cosa non riconosciuta: si tiene com'è.
     return trimmed
@@ -304,20 +369,28 @@ export namespace BountyState {
   /**
    * Legge lo stato e ne rinfresca la parte derivata, scrivendo il risultato.
    * È il "pull" del design: i fatti si ri-derivano a ogni lettura, così uno
-   * stato che pecca per difetto si riallinea da solo. Se lo stato non esiste,
-   * restituisce quello derivato senza crearlo (il chiamante decide).
+   * stato che pecca per difetto si riallinea da solo.
+   *
+   * Distinzione cruciale: "non c'è" e "c'è ed è rotto" NON sono lo stesso caso.
+   * Se manca, si crea lo stato iniziale (progetto nuovo). Se è invalido
+   * (`Unreadable`), si PROPAGA: rigenerarlo cancellerebbe in silenzio la parte
+   * dichiarata (la fase) e presenterebbe uno stato `idle` inventato come fatto.
+   * Un cattura-tutto qui vanificherebbe la regola "lo stato invalido blocca".
    */
   export function refresh(dir: string, program?: string): Info {
     const derived = derive(dir)
     const now = new Date().toISOString()
 
-    const base = (() => {
-      try {
-        return read(dir)
-      } catch {
-        return create({ directory: dir, program: program ?? path.basename(dir) })
-      }
-    })()
+    // Il discriminante e' l'ESISTENZA DEL FILE, non `exists()`: quest'ultimo
+    // inghiotte anche lo stato invalido, e usarlo qui ricreerebbe il buco
+    // (uno stato rotto verrebbe considerato "assente" e sovrascritto).
+    let base: Info
+    if (fs.existsSync(file(dir))) {
+      base = read(dir) // stato invalido -> Unreadable, si propaga
+    } else {
+      // Manca del tutto: progetto nuovo, si parte da `idle`.
+      base = create({ directory: dir, program: program ?? path.basename(dir) })
+    }
 
     const next: Info = { ...base, derivedAt: now, updatedAt: now, ...derived }
     write(next)
@@ -342,22 +415,44 @@ export namespace BountyState {
 
   /**
    * Un progetto di hunting è una directory che contiene uno `state.json` bounty
-   * OPPURE che sta sotto `bugbounty/programs/`. Il secondo caso conta perché
-   * `bb hunt` può aprire la sessione su un progetto appena creato e non ancora
-   * scritto: se il riconoscimento dipendesse dall'esistenza del file, il gate
-   * non scatterebbe proprio quando serve di più.
+   * OPPURE che sta ESATTAMENTE sotto `<base bugbounty>/programs/`.
+   *
+   * Il riconoscimento per path deve essere ANCORATO alla base reale, non a una
+   * sottostringa: `"/x/bugbounty/programs/"` compare anche in un repo qualsiasi
+   * che abbia una sottodirectory chiamata così, e quel repo verrebbe trattato
+   * come progetto di bounty — quindi bloccato, e con uno `state.json` scritto
+   * dentro. Si confronta il PREFISSO normalizzato con la base vera.
+   *
+   * L'esistenza del file non basta da sola a distinguere un progetto di bounty
+   * da un `state.json` omonimo in un altro progetto: per questo lo schema è
+   * versionato e `read()` distingue "assente" da "illeggibile" (un file che non
+   * è uno stato bounty NON viene interpretato come tale).
    */
   export function isHuntingDir(dir: string): boolean {
-    if (path.basename(dir) === "programs" ) return false
     const normalized = path.resolve(dir)
-    if (normalized.split(path.sep).join("/").includes("/bugbounty/programs/")) return true
+    // La cartella che CONTIENE i programmi non è un programma.
+    if (normalized === programsDir()) return false
+
+    // Solo i discendenti diretti della base sono progetti di bounty.
+    const rel = path.relative(programsDir(), normalized)
+    if (rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)) return true
+
     return fs.existsSync(file(normalized))
   }
 
   /**
-   * Flag per-sessione: "lo stato di questo progetto è stato caricato".
-   * Vive in `Instance.state` — quindi si azzera al riavvio, che è corretto:
-   * una sessione nuova deve rileggere lo stato.
+   * Flag "lo stato di questo progetto è stato caricato".
+   *
+   * ATTENZIONE alla granularità: vive in `Instance.state`, la cui chiave è
+   * `Instance.directory` (src/project/instance.ts) — quindi è per
+   * (sessione, directory), non per sola sessione: la stessa sessione che ha
+   * caricato il progetto A risulta "non caricata" in B. E' la granularità
+   * corretta per il gate (il blocco riguarda un progetto, non l'agente in
+   * astratto), ma non va chiamata "per-sessione" (lo era nei commenti e in un
+   * test: corretti, non era vero).
+   *
+   * Si azzera al riavvio e con `Instance.dispose()`: una sessione nuova deve
+   * rileggere lo stato.
    */
   const loadedFlag = Instance.state(() => {
     const set = new Set<string>()
@@ -382,6 +477,10 @@ export namespace BountyState {
   /**
    * Carica lo stato (derivando i fatti) e segna la sessione come "stato letto".
    * È il punto in cui il gate di `todowrite` si sblocca.
+   *
+   * `markLoaded` sta DOPO `refresh`: se la lettura fallisce (stato invalido) il
+   * gate deve RESTARE chiuso. Marcare prima sbloccherebbe la sessione su un
+   * caricamento fallito — cioè il contrario della garanzia.
    */
   export function load(sessionID: string, dir: string, program?: string): Info {
     const info = refresh(dir, program)

@@ -14,10 +14,16 @@ function tmpdir(): string {
   return dir
 }
 
-/** Una directory che sembra un progetto di hunting, sotto bugbounty/programs/. */
+// La radice dei dati e' ancorata a `$CYBERSTRIKE_HOME` (vedi BountyState.root):
+// i test devono usare una base PROPRIA, altrimenti scriverebbero nella home
+// dell'utente — e il riconoscimento del progetto si ancora alla stessa base che
+// il CLI usa davvero.
+const ROOT = tmpdir()
+process.env["CYBERSTRIKE_HOME"] = ROOT
+
+/** Una directory che E' un progetto di hunting, sotto `<root>/bugbounty/programs/`. */
 function huntingDir(): string {
-  const base = tmpdir()
-  const dir = path.join(base, "bugbounty", "programs", "acme")
+  const dir = path.join(ROOT, "bugbounty", "programs", "acme")
   fs.mkdirSync(dir, { recursive: true })
   return dir
 }
@@ -116,16 +122,38 @@ describe("stato di progetto — riconoscimento del progetto di hunting", () => {
     // Conta perché bb hunt apre la sessione su un progetto nuovo: se il
     // riconoscimento dipendesse dal file, il gate non scatterebbe proprio
     // quando serve di più.
-    const dir = path.join(tmpdir(), "bugbounty", "programs", "fresco")
+    const dir = path.join(ROOT, "bugbounty", "programs", "fresco")
     fs.mkdirSync(dir, { recursive: true })
     expect(fs.existsSync(path.join(dir, "state.json"))).toBe(false)
     expect(BountyState.isHuntingDir(dir)).toBe(true)
   })
 
   test("la directory 'programs' stessa non è un progetto", () => {
-    const dir = path.join(tmpdir(), "bugbounty", "programs")
+    const dir = path.join(ROOT, "bugbounty", "programs")
     fs.mkdirSync(dir, { recursive: true })
     expect(BountyState.isHuntingDir(dir)).toBe(false)
+  })
+
+  test("B6: una repo QUALUNQUE con una sottodirectory bugbounty/programs/ NON è un progetto", () => {
+    // Il riconoscimento era per SOTTOSTRINGA ("/bugbounty/programs/"): un repo
+    // normale con quella sottodirectory veniva trattato come progetto di
+    // bounty — quindi bloccato, e con uno state.json scritto dentro. Ora il
+    // confronto è ancorato alla base reale (`$CYBERSTRIKE_HOME`).
+    const finta = path.join(tmpdir(), "repo", "bugbounty", "programs", "x")
+    fs.mkdirSync(finta, { recursive: true })
+    expect(BountyState.isHuntingDir(finta)).toBe(false)
+    // e nemmeno il repo che contiene quella sottodirectory
+    expect(BountyState.isHuntingDir(path.join(tmpdir(), "repo"))).toBe(false)
+  })
+
+  test("B7: cancellare state.json NON disarma il gate su un progetto del layout", () => {
+    // Nelle dir riconosciute SOLO dal file, `rm state.json` faceva sparire anche
+    // il gate. Per un progetto sotto la base, il riconoscimento non dipende dal
+    // file: il gate resta.
+    const dir = huntingDir()
+    BountyState.write(BountyState.create({ directory: dir, program: "acme" }))
+    fs.unlinkSync(path.join(dir, "state.json"))
+    expect(BountyState.isHuntingDir(dir)).toBe(true)
   })
 })
 

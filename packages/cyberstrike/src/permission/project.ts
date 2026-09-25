@@ -392,6 +392,19 @@ export namespace ProjectPerimeter {
     const dir = path.resolve(projectDir)
     const rel = path.relative(worktree ?? "/", dir)
 
+    // Con `dir === worktree` il relativo è "" e il pattern allow diventa "/*":
+    // `Wildcard.match` lo traduce in `\/.*`, che copre OGNI path assoluto —
+    // quindi anche /etc/passwd. `diagnose()` rifiuta già questo caso
+    // (risk: project-is-repo-root), ma la funzione non deve dipendere dal
+    // chiamante per restare un confine: senza relativo non esiste un pattern
+    // che distingua dentro da fuori, quindi si rifiuta invece di emettere un
+    // perimetro apparente che non contiene nulla.
+    if (rel === "") {
+      throw new Error(
+        `project directory coincides with the worktree root and cannot be perimetrated: ${dir}`,
+      )
+    }
+
     // `Wildcard.match` traduce `*` -> `.*` e `?` -> `.` su TUTTO il pattern,
     // inclusi i metacaratteri che fossero nel nome del programma: il pattern
     // allow coprirebbe più del dovuto (con program `*` diventerebbe scrivibile

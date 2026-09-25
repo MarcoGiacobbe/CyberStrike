@@ -15,6 +15,7 @@ import { clone, mergeDeep, pipe } from "remeda"
 import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import { Instance } from "@/project/instance"
+import { BountyState } from "@/session/bounty-state"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
@@ -324,8 +325,19 @@ export namespace LLM {
     ]
   }
 
-  async function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "user">) {
+  export async function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "user"> & { sessionID?: string }) {
     const disabled = PermissionNext.disabled(Object.keys(input.tools), input.agent.permission)
+
+    // Gate del progetto-hunting: `todowrite` non deve essere OFFERTO all'agente
+    // finché non ha caricato lo stato del progetto (`bounty_status`). Il blocco
+    // meccanico esiste anche dentro il tool, ma un tool che compare nella lista
+    // e poi risponde "bloccato" e' un contratto diverso — l'agente lo chiama,
+    // e dentro `batch` il rifiuto viene contato come `successful`. Togliendolo
+    // dalla lista il gate e' quello che il design dichiara: il tool MANCA.
+    if (input.sessionID && BountyState.isHuntingDir(Instance.directory) && !BountyState.loaded(input.sessionID)) {
+      disabled.add("todowrite")
+    }
+
     for (const tool of Object.keys(input.tools)) {
       if (input.user.tools?.[tool] === false || disabled.has(tool)) {
         delete input.tools[tool]

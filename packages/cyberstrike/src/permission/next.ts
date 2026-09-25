@@ -107,6 +107,73 @@ export namespace PermissionNext {
     ),
   }
 
+  /**
+   * Un pattern che copre TUTTO (`*`, `**`, `?*`, `?`): non seleziona un caso,
+   * seleziona un dominio. `Wildcard.match` e' la definizione di "matcha
+   * qualunque stringa", quindi si usa quella invece di una lista di forme.
+   */
+  function coversEverything(pattern: string): boolean {
+    return Wildcard.match("*", pattern)
+  }
+
+  /** Un pattern con jolly: seleziona una FAMIGLIA di valori, non un valore. */
+  function hasWildcard(pattern: string): boolean {
+    return /[*?]/.test(pattern)
+  }
+
+  /**
+   * Permission il cui `pattern` e' TESTO DI COMANDO, non un path.
+   * Una concessione di famiglia (`python3 *`) qui non e' confinabile a una
+   * directory: il comando puo' scrivere ovunque, e il perimetro non ha modo di
+   * accorgersene perche' la classificazione (che decide se chiedere) viene
+   * saltata quando il permesso e' gia' concesso. Per queste permission la
+   * famiglia non puo' diventare una concessione permanente.
+   */
+  const COMMAND_PERMISSIONS = new Set(["bash", "bash_unresolved"])
+
+  /**
+   * Firna del perimetro di scrittura dei progetti di bounty: un `deny` su
+   * external_directory (vedi `buildProjectRuleset`, src/permission/project.ts).
+   */
+  function isPerimeter(ruleset: Ruleset): boolean {
+    return ruleset.some((r) => r.permission === "external_directory" && r.action === "deny")
+  }
+
+  /**
+   * Una concessione `allow` che NON deve partecipare alla valutazione, perche'
+   * annullerebbe un confine invece di applicarlo. Due casi, entrambi provati
+   * come aggirabili (vedi wayfinder/bb-autonomous-flow/tickets/
+   * verifica-stato-gate-always.md):
+   *
+   * 1. COPRE TUTTO su una permission che il ruleset NEGA. `approved` viene
+   *    valutato per ultimo (`findLast`) e vincerebbe sul `deny`: un solo
+   *    `{edit, "*", allow}` — cliccato o salvato su DB — riapre una sessione
+   *    che il perimetro aveva chiuso. Il confine e' una decisione di
+   *    sicurezza: non si revoca con una concessione.
+   *
+   * 2. FAMIGLIA su una permission a testo di comando, in sessione perimetrata.
+   *    `python3 *` copre `python3 -c "open('/etc/x','w')"`: dopo un click
+   *    "sempre" su un comando innocuo, la scrittura fuori progetto non chiede
+   *    piu' nulla.
+   */
+  function voidsBoundary(rule: Rule, merged: Ruleset): boolean {
+    if (rule.action !== "allow") return false
+
+    // Entrambi i casi valgono SOLO in una sessione perimetrata. Fuori da un
+    // confine il ruleset e' una preferenza dell'utente e "l'ultima regola
+    // vince" resta la semantica: filtrare anche li' cambierebbe il
+    // significato di qualunque config che neghi e poi riammetta in blocco —
+    // cosa che i test generali di `evaluate` verificano.
+    if (!isPerimeter(merged)) return false
+
+    if (coversEverything(rule.pattern) && merged.some((r) => r.permission === rule.permission && r.action === "deny"))
+      return true
+
+    if (COMMAND_PERMISSIONS.has(rule.permission) && hasWildcard(rule.pattern)) return true
+
+    return false
+  }
+
   const state = Instance.state(() => {
     const projectID = Instance.project.id
     const row = Database.use((db) =>
@@ -201,15 +268,19 @@ export namespace PermissionNext {
         return
       }
       if (input.reply === "always") {
-        // Un `always` su un pattern che copre TUTTO (`*`, come quello che
-        // write.ts/edit.ts mandano) distruggerebbe il perimetro: `approved`
-        // viene valutato per ultimo e `findLast` lo farebbe vincere sul `deny`
-        // del progetto, aprendo la sessione intera a `edit("/etc/passwd")`.
-        // Se il ruleset attivo contiene un `deny` per questa permission, il
-        // confine è una decisione di sicurezza e l'utente non può renderla
-        // permanente con un click: si approva solo questa volta.
-        const perimetrato = existing.ruleset.some((r) => r.permission === existing.info.permission && r.action === "deny")
-        const ampi = existing.info.always.filter((pattern) => perimetrato && Wildcard.match("*", pattern))
+        // Alcune concessioni non possono diventare permanenti perche'
+        // annullerebbero un confine (`voidsBoundary`): un `always` su un
+        // pattern che copre tutto (`*`, come quello che write.ts/edit.ts
+        // mandano), o una FAMIGLIA su una permission a testo di comando in
+        // sessione perimetrata (`python3 *`). Le prime due lascierebbero
+        // `approved` vincere sul `deny` del progetto; la terza coprirebbe
+        // comandi che scrivono fuori progetto senza che la classificazione
+        // (che decide se chiedere) venga piu' consultata. In entrambi i casi
+        // l'utente approva solo questa volta — e la decisione e' esplicita
+        // qui, non un filtro silenzioso a valle.
+        const ampi = existing.info.always.filter((pattern) =>
+          voidsBoundary({ permission: existing.info.permission, pattern, action: "allow" }, existing.ruleset),
+        )
         for (const pattern of ampi) {
           log.info("always limited by perimeter", { permission: existing.info.permission, pattern })
         }
@@ -252,8 +323,14 @@ export namespace PermissionNext {
 
   export function evaluate(permission: string, pattern: string, ...rulesets: Ruleset[]): Rule {
     const merged = merge(...rulesets).filter((rule) => rule && rule.permission && rule.pattern && rule.action)
-    log.debug("evaluate", { permission, pattern, rules: merged.length })
-    const match = merged.findLast(
+    // Le concessioni che annullerebbero un confine non entrano nella
+    // valutazione: il filtro sta QUI, dove ruleset e concessioni sono
+    // visibili insieme, quindi vale per ogni canale (click interattivo, lista
+    // salvata su DB, regola di config). Filtrare solo in `reply` lasciava
+    // aperto il canale persistito.
+    const effective = merged.filter((rule) => !voidsBoundary(rule, merged))
+    log.debug("evaluate", { permission, pattern, rules: effective.length, filtered: merged.length - effective.length })
+    const match = effective.findLast(
       (rule) => Wildcard.match(permission, rule.permission) && Wildcard.match(pattern, rule.pattern),
     )
     const result = match ?? { action: "ask", permission, pattern: "*" }

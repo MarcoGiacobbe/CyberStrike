@@ -20,8 +20,16 @@ function gate(dir: string, sessionID: string): string | undefined {
   return (
     "Questo è un progetto di bug bounty: prima di pianificare devi caricare lo stato attuale, " +
     "per non ripetere lavoro già fatto. Il tool per farlo è `bounty_status`. " +
-    "Non è una raccomandazione: finché non lo chiami, todowrite resta bloccato."
+    "Non è una raccomandazione: finché non lo chiami, todowrite non è disponibile."
   )
+}
+
+/** Errore del gate: il tool non deve poter "riuscire" senza stato. */
+export class BountyStateNotLoaded extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "BountyStateNotLoaded"
+  }
 }
 
 /** Un progetto di hunting è una directory che contiene (o deve contenere) uno stato bounty. */
@@ -51,11 +59,11 @@ export const TodoWriteTool = Tool.define<
 
     const blocked = gate(Instance.directory, ctx.sessionID)
     if (blocked) {
-      return {
-        title: "blocked — load project state first",
-        output: blocked,
-        metadata: { todos: params.todos, blockedBy: "bounty-state-not-loaded" },
-      }
+      // Lancia, non ritorna un output di "blocco": un risultato che il tool
+      // dichiara riuscito (title + metadata) verrebbe contato come `successful`
+      // da `batch`, e l'agente non vedrebbe nulla di anormale. Un errore è
+      // l'unica forma che il gate può prendere per essere un gate.
+      throw new BountyStateNotLoaded(blocked)
     }
 
     const activeCount = params.todos.filter((x) => x.status === "pending" || x.status === "in_progress").length

@@ -121,8 +121,7 @@ describe("perimetro E2E — il caso pericoloso: progetto radice di un repo", () 
 
   test("la ragione: nessun pattern relativo distingue interno ed esterno", () => {
     // Con projectDir === worktree, `path.relative` produce per un file interno
-    // "state.json" e per uno esterno "../../../etc/passwd". Il pattern relativo
-    // generato è `"" + "/*"` = "/*", che non matcha NESSUNO dei due.
+    // "state.json" e per uno esterno "../../../etc/passwd".
     const worktree = "/home/marco/repo-hunt"
     const projectDir = "/home/marco/repo-hunt"
     const insideRel = path.relative(worktree, projectDir + "/state.json")
@@ -131,18 +130,17 @@ describe("perimetro E2E — il caso pericoloso: progetto radice di un repo", () 
     expect(insideRel).toBe("state.json")
     expect(path.relative(worktree, projectDir)).toBe("")
 
-    const ruleset = ProjectPerimeter.buildProjectRuleset(projectDir, worktree)
-    const relativePattern = ruleset.find(
-      (r) => r.permission === "edit" && r.action === "allow" && r.pattern === "/*",
-    )
-    // il pattern relativo è inutile: non copre nemmeno l'interno
-    expect(relativePattern).toBeDefined()
-    expect(PermissionNext.evaluate("edit", insideRel, ruleset).action).toBe("deny")
-    expect(PermissionNext.evaluate("edit", outsideRel, ruleset).action).toBe("deny")
+    // `buildProjectRuleset` deve RIFIUTARE questa configurazione invece di
+    // emettere un ruleset. (Prima emetteva un pattern allow `"/*"` che il test
+    // considerava inerte perche' provava solo path RELATIVI: `Wildcard.match`
+    // lo traduce in `\/.*`, e `edit("/etc/passwd")` — path ASSOLUTO, che e' la
+    // forma reale — risultava `allow`. Il rifiuto e' la sola risposta sicura.)
+    expect(() => ProjectPerimeter.buildProjectRuleset(projectDir, worktree)).toThrow(/cannot be perimetrated/)
 
     // e un pattern che coprirebbe l'interno coprirebbe anche l'esterno:
     // non esiste forma relativa che separi i due casi. Da qui il rifiuto.
     expect(Wildcard.match(insideRel, "*")).toBe(true)
     expect(Wildcard.match(outsideRel, "*")).toBe(true)
+    expect(Wildcard.match("/etc/passwd", "/*")).toBe(true)
   })
 })
