@@ -165,3 +165,37 @@ sessione. Chi è quel tool? Due opzioni:
 (b) è più solido (non dipende dall'agente) ma lega il gate a `bb hunt`.
 (a) è più flessibile (funziona anche fuori da `bb hunt`) ma reintroduce la
 dipendenza dal comportamento dell'agente. **Da decidere con l'utente.**
+
+## Scoperta: la chiave del progetto-hunting è `session.directory`, non `project_id`
+
+Verificato nel codice (`src/project/project.ts:187-192`, `session.sql.ts:11-33`):
+
+Una directory **non-git** (come `~/.cyberstrike/bugbounty/programs/<p>/`) mappa
+sempre sul progetto `{ id: "global", worktree: "/" }`. Conseguenza: **tutte le
+sessioni di tutti i programmi condividono lo stesso `project_id = "global"`**.
+`project_id` NON identifica il programma.
+
+La chiave corretta è **`session.directory`** (colonna che esiste già): le sessioni
+di un programma sono quelle con `directory = <projectDir>`. E poiché
+`CoverageNote`, `RequestObservation` e `Vulnerability` hanno tutte `session_id`,
+l'evidenza è già filtrabile per progetto via join su `session.directory`.
+
+Questo chiude il punto 3 in modo economico: **i "target toccati" si derivano
+dalle sessioni del progetto**, con l'asset dichiarato dai `coverage_note`
+(`asset` è già generico: origin / ARN / host:port) e le vulnerabilità da
+`vulnerability`. Nessuna nuova tabella, nessuna nuova contabilità: l'evidenza
+c'è già, serve solo leggerla con il filtro giusto.
+
+Nota di conseguenza sul perimetro: `worktree = "/"` significa che i pattern
+relativi sono la discesa completa dalla radice (`home/marco/.cyberstrike/...`).
+Verificato: `evaluate` dà `allow` sui path del progetto e `deny` su
+`/home/marco/.ssh/authorized_keys` e `/etc/passwd`. Il caso `no-repo` è sicuro.
+
+## Punto 1-bis: dove sta lo stato (DB o file?)
+
+`state.json` su disco — è la scelta corretta per il **caricamento deterministico**
+(`bb hunt` lo legge senza toccare il DB, e il perimetro lo copre). Ma i FATTI
+(target, vuln) stanno nel DB. Quindi `state.json` non duplica i fatti: contiene
+(a) ciò che i comandi spingono (fase, ripresa) e (b) il **riassunto derivato**
+dall'ultima lettura, con timestamp di derivazione. Se i fatti derivati non
+combaciano col DB, vince il DB: è la regola del disallineamento.
