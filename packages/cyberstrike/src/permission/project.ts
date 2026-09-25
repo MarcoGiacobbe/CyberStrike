@@ -392,16 +392,19 @@ export namespace ProjectPerimeter {
     const dir = path.resolve(projectDir)
     const rel = path.relative(worktree ?? "/", dir)
 
-    // Con `dir === worktree` il relativo è "" e il pattern allow diventa "/*":
-    // `Wildcard.match` lo traduce in `\/.*`, che copre OGNI path assoluto —
-    // quindi anche /etc/passwd. `diagnose()` rifiuta già questo caso
-    // (risk: project-is-repo-root), ma la funzione non deve dipendere dal
-    // chiamante per restare un confine: senza relativo non esiste un pattern
-    // che distingua dentro da fuori, quindi si rifiuta invece di emettere un
-    // perimetro apparente che non contiene nulla.
-    if (rel === "") {
+    // Il relativo non deve contenere SALITE: con `dir === worktree` è "" e il
+    // pattern diventa "/*" (`Wildcard.match` lo traduce `\/.*`, che copre OGNI
+    // path assoluto, quindi anche /etc/passwd); con `dir` GENITORE del worktree
+    // è ".." e il pattern diventa "../*", che risolve `../../etc/passwd` fuori
+    // dal progetto. Non basta `rel === ""`: la classe è "il relativo esce dal
+    // worktree", e va rifiutata per intero. `diagnose()` rifiuta già il primo
+    // caso (risk: project-is-repo-root), ma la funzione non deve dipendere dal
+    // chiamante per restare un confine: senza un relativo che scende, non esiste
+    // un pattern che distingua dentro da fuori.
+    if (rel === "" || rel.split(path.sep).includes("..")) {
       throw new Error(
-        `project directory coincides with the worktree root and cannot be perimetrated: ${dir}`,
+        `project directory is not a descendant of the worktree and cannot be perimetrated ` +
+          `(projectDir=${dir}, worktree=${worktree ?? "/"})`,
       )
     }
 

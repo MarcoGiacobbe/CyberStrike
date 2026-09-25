@@ -32,14 +32,17 @@ export const BountyStatusTool = Tool.define<z.ZodObject<{ refresh: z.ZodOptional
 
     if (!BountyState.isHuntingDir(dir)) {
       // Fuori dai progetti di hunting non c'e' stato da caricare: il gate di
-      // todowrite non si applica, e marcare "caricato" e' corretto (non c'e'
-      // nulla da leggere). Qui NON si scrive niente su disco.
-      BountyState.markLoaded(ctx.sessionID)
+      // todowrite non si applica. QUI NON SI MARCA "caricato": se in questa
+      // directory nascesse poi uno `state.json` (scritto dal tool `write`, che
+      // non passa da nessun gate, o a mano), il gate risulterebbe gia' sbloccato
+      // senza che lo stato sia mai stato letto. Il flag afferma "ho letto", quindi
+      // non si mette se non si e' letto niente.
       return {
         title: "not a bounty project",
         output:
-          `This directory is not a bug-bounty project (no state.json and not under bugbounty/programs/):\n  ${dir}\n` +
-          `There is no project state to load, and planning is not blocked.`,
+          `This directory is not a bug-bounty project (no state.json and not a program directory under bugbounty/programs/):\n  ${dir}\n` +
+          `There is no project state to load. If this IS a bounty project, it has no state yet: ` +
+          `create it before planning.`,
         metadata: { hunting: false, directory: dir } as Meta,
       }
     }
@@ -59,12 +62,12 @@ export const BountyStatusTool = Tool.define<z.ZodObject<{ refresh: z.ZodOptional
     const divergences = BountyState.divergences(info, derived)
 
     const lines = [
-      `Program: ${info.program}`,
-      `Phase:   ${info.phase} (set ${info.phaseUpdatedAt})`,
-      ...(info.objective ? [`Objective: ${info.objective}`] : []),
+      `Program: ${field(info.program)}`,
+      `Phase:   ${info.phase} (set ${field(info.phaseUpdatedAt)})`,
+      ...(info.objective ? [`Objective: ${field(info.objective)}`] : []),
       "",
       `Targets touched: ${info.targets.length}`,
-      ...info.targets.map((t) => `  - ${t.host}  (last ${t.lastSeen})`),
+      ...info.targets.map((t) => `  - ${field(t.host)}  (last ${field(t.lastSeen)})`),
       "",
       `Findings: ${info.findings.total} total — ${info.findings.new} new, ${info.findings.approved} approved, ` +
         `${info.findings.duplicate} duplicate, ${info.findings.other} other`,
@@ -73,7 +76,7 @@ export const BountyStatusTool = Tool.define<z.ZodObject<{ refresh: z.ZodOptional
         ? [
             "",
             `⚠ State disagrees with recorded evidence in ${divergences.length} point(s):`,
-            ...divergences.map((d) => `  - ${d}`),
+            ...divergences.map((d) => `  - ${field(d)}`),
             `Do not trust the figures above where they disagree: record evidence ` +
               `(record_coverage_note / report_vulnerability), or re-run with refresh: true.`,
           ]
@@ -81,7 +84,7 @@ export const BountyStatusTool = Tool.define<z.ZodObject<{ refresh: z.ZodOptional
     ]
 
     return {
-      title: `bounty state — ${info.program} (${info.phase})`,
+      title: `bounty state — ${field(info.program)} (${info.phase})`,
       output: lines.join("\n"),
       metadata: {
         hunting: true,
@@ -97,6 +100,25 @@ export const BountyStatusTool = Tool.define<z.ZodObject<{ refresh: z.ZodOptional
   },
   },
 )
+
+/**
+ * Sanificazione all'EMISSIONE, non campo per campo.
+ *
+ * `program`, `objective`, `phaseUpdatedAt` e `targets[].lastSeen` sono campi
+ * DICHIARATI (li scrive l'utente o li porta il nome della directory), e vengono
+ * stampati riga per riga: un newline in uno di essi produce righe che sembrano
+ * output del sistema ("Targets touched: 9", "Findings: 137 approved (verified)")
+ * — anche con `refresh: true`, cioè nel percorso che dovrebbe essere sicuro, e
+ * anche senza scrivere nessun file (basta il nome della directory).
+ *
+ * Sanificare campo per campo significa che ogni campo nuovo riapre il buco; qui
+ * la regola è una sola e vale per qualunque stringa che finisce nell'output.
+ */
+function field(s: string): string {
+  // `\s` copre anche i separatori Unicode (U+2028/U+2029) e i controlli che
+  // `hostOf` già scarta: quello che non è una riga non deve diventare una riga.
+  return s.replace(/\s+/g, " ").trim()
+}
 
 /**
  * Lettura senza ri-derivazione (`refresh: false`). Lo stato invalido propaga

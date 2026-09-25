@@ -59,7 +59,7 @@ describe("stato di progetto — schema e persistenza", () => {
   test("uno stato con JSON non valido è rifiutato", () => {
     const dir = huntingDir()
     fs.writeFileSync(path.join(dir, "state.json"), "{ questo non è json")
-    expect(() => BountyState.read(dir)).toThrow(/JSON non valido/)
+    expect(() => BountyState.read(dir)).toThrow(/non leggibile/)
   })
 
   test("uno stato che non rispetta lo schema è rifiutato", () => {

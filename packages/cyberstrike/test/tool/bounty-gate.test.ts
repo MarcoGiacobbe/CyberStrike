@@ -14,9 +14,22 @@ import { Session } from "../../src/session"
 // un tool che manca. Questi test verificano che manchi davvero, e che si sblocchi
 // quando e solo quando lo stato è stato caricato.
 
+// La radice dei dati è ancorata a `$CYBERSTRIKE_HOME` (vedi BountyState.root):
+// i test devono costruire i progetti DENTRO quella base, altrimenti il
+// riconoscimento per path non li vede. La variabile è impostata PRIMA di
+// caricare i moduli, e `huntingDir()` vi si appoggia.
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "gate-home-"))
+process.env["CYBERSTRIKE_HOME"] = HOME
+
 function huntingDir(): string {
-  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "gate-")), "bugbounty", "programs", "acme")
+  const dir = path.join(HOME, "bugbounty", "programs", "acme")
   fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** Un progetto riconosciuto dal SOLO state.json fuori dal layout ufficiale. */
+function strayDir(): string {
+  const dir = fs.mkdtempSync(path.join(HOME, "fuori-"))
   return dir
 }
 

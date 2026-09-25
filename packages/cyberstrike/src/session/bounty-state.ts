@@ -108,7 +108,10 @@ export namespace BountyState {
    * sessione in una directory che il gate non riconosce.
    */
   export function root(): string {
-    return process.env["CYBERSTRIKE_HOME"] ?? path.join(os.homedir(), ".cyberstrike")
+    // `path.resolve` sul valore d'ambiente: uno spelling non canonico (`..`,
+    // slash doppio, slash finale) faceva divergere la base dai path reali, e il
+    // progetto non veniva piu' riconosciuto — gate e perimetro spenti.
+    return path.resolve(process.env["CYBERSTRIKE_HOME"] ?? path.join(os.homedir(), ".cyberstrike"))
   }
 
   /** La directory di progetto per un programma: `<root>/bugbounty/programs/<p>/`. */
@@ -133,13 +136,20 @@ export namespace BountyState {
    */
   export function read(dir: string): Info {
     const p = file(dir)
-    if (!fs.existsSync(p)) throw new Unreadable(`nessun state.json in ${dir}`)
+
+    // `lstat`, non `existsSync`: quest'ultimo SEGUE i symlink e torna false per
+    // un link la cui destinazione è stata rimossa. Uno `state.json` che esiste
+    // (ed è rotto) verrebbe così classificato "assente" e sovrascritto —
+    // esattamente ciò che la regola "lo stato invalido blocca" vieta.
+    if (presence(dir) === "absent") throw new Unreadable(`nessun state.json in ${dir}`)
 
     let raw: unknown
     try {
       raw = JSON.parse(fs.readFileSync(p, "utf8"))
     } catch (e) {
-      throw new Unreadable(`JSON non valido in ${p}`, e)
+      // Comprende il symlink che punta a un file rimosso (ENOENT su readFile):
+      // "presente ma non leggibile" è diverso da "assente", e va segnalato.
+      throw new Unreadable(`state.json presente ma non leggibile in ${p}`, e)
     }
 
     const version = (raw as { version?: unknown })?.version
@@ -152,7 +162,58 @@ export namespace BountyState {
 
     const parsed = Info.safeParse(raw)
     if (!parsed.success) throw new Unreadable(`schema non valido: ${parsed.error.message}`)
+
+    // Lo stato appartiene al progetto che DICHIARA, non alla directory da cui lo
+    // si legge. Senza questo controllo `mv acme acme-2026` basta a far
+    // presentare alla directory nuova il programma vecchio e a far riscrivere il
+    // vecchio `state.json` (ricreandolo); un refresh eseguito in A sostituisce
+    // poi in silenzio la fase dichiarata dall'utente in B. Si confrontano i path
+    // canonici, così uno spelling diverso della STESSA directory (slash finale,
+    // symlink) non conta come un progetto diverso.
+    if (canonical(parsed.data.directory) !== canonical(dir)) {
+      throw new Unreadable(
+        `lo state.json dichiara la directory ${parsed.data.directory} ma è stato letto in ${dir}: ` +
+          `il progetto è stato spostato o rinominato. Lo stato non si reinterpreta: va rigenerato`,
+      )
+    }
+
     return parsed.data
+  }
+
+  /**
+   * Presenza FISICA di `state.json`, senza interpretarlo: è il discriminante per
+   * decidere "lo creo" oppure "lo leggo".
+   *
+   * `lstat` guarda la voce nell'albero, non la sua destinazione: un symlink c'è
+   * anche quando il bersaglio è stato rimosso. Con `existsSync` quel caso
+   * tornava "assente", lo stato veniva sovrascritto con `idle` e la fase
+   * dichiarata spariva — lo stesso esito che il fix di B1 doveva impedire.
+   */
+  function presence(dir: string): "absent" | "present" {
+    try {
+      fs.lstatSync(file(dir))
+      return "present"
+    } catch {
+      return "absent"
+    }
+  }
+
+  /**
+   * Path canonico, per confrontare due spelling della STESSA directory.
+   *
+   * `path.resolve` normalizza `.`, `..` e gli slash finali ma NON i symlink:
+   * con `realpath` `<link>/bugbounty/programs/x` e `<reale>/bugbounty/programs/x`
+   * coincidono, quindi né il confronto di identità né il riconoscimento del
+   * progetto dipendono dallo spelling scelto da chi crea la sessione. Se il path
+   * non esiste ancora non c'è nulla da dereferenziare e `resolve` basta.
+   */
+  export function canonical(p: string): string {
+    const resolved = path.resolve(p)
+    try {
+      return fs.realpathSync(resolved)
+    } catch {
+      return resolved
+    }
   }
 
   /**
@@ -236,12 +297,17 @@ export namespace BountyState {
 
   /** Le sessioni di questo progetto, per `directory`. */
   function sessions(dir: string): string[] {
+    // Confronto sul path CANONICO: la stessa directory scritta in modo diverso
+    // (slash finale, `.`/`..`, symlink) è lo stesso progetto. Con l'uguaglianza
+    // di stringa esatta una spelling diversa faceva AZERARE i fatti derivati
+    // (targets e findings a 0) e li presentava come tali, riscrivendoli su disco.
+    const target = canonical(dir)
     return Database.use((db) =>
       db
-        .select({ id: SessionTable.id })
+        .select({ id: SessionTable.id, directory: SessionTable.directory })
         .from(SessionTable)
-        .where(eq(SessionTable.directory, dir))
         .all()
+        .filter((r) => canonical(r.directory) === target)
         .map((r) => r.id),
     )
   }
@@ -381,11 +447,11 @@ export namespace BountyState {
     const derived = derive(dir)
     const now = new Date().toISOString()
 
-    // Il discriminante e' l'ESISTENZA DEL FILE, non `exists()`: quest'ultimo
-    // inghiotte anche lo stato invalido, e usarlo qui ricreerebbe il buco
-    // (uno stato rotto verrebbe considerato "assente" e sovrascritto).
+    // Il discriminante e' la PRESENZA FISICA del file (`lstat`), non `exists()`:
+    // quest'ultimo inghiotte anche lo stato invalido, e `existsSync` segue i
+    // symlink (un link rotto tornerebbe "assente" e verrebbe sovrascritto).
     let base: Info
-    if (fs.existsSync(file(dir))) {
+    if (presence(dir) === "present") {
       base = read(dir) // stato invalido -> Unreadable, si propaga
     } else {
       // Manca del tutto: progetto nuovo, si parte da `idle`.
@@ -408,8 +474,34 @@ export namespace BountyState {
     const actual = new Set(derived.targets.map((t) => t.host))
     for (const h of actual) if (!declared.has(h)) out.push(`target toccato ma non nello stato: ${h}`)
     for (const h of declared) if (!actual.has(h)) out.push(`target nello stato ma senza evidenza: ${h}`)
+
+    // La SCOMPOSIZIONE, non solo il totale: con "5 new nel DB presentati come
+    // 5 approved" il totale coincideva e il disallineamento passava in silenzio.
+    for (const key of ["new", "approved", "duplicate", "other"] as const) {
+      if (info.findings[key] !== derived.findings[key])
+        out.push(
+          `vulnerabilità ${key}: stato dichiara ${info.findings[key]}, evidenza ne mostra ${derived.findings[key]}`,
+        )
+    }
     if (info.findings.total !== derived.findings.total)
       out.push(`vulnerabilità: stato dichiara ${info.findings.total}, evidenza ne mostra ${derived.findings.total}`)
+
+    // I target hanno una PROVA (le sessioni che li hanno toccati) e un periodo:
+    // un `sessions: 40` con id inesistenti, o un `firstSeen` che precede ogni
+    // evidenza, è altrettanto falso di un host in più — e altrettanto invisibile
+    // se si confrontano solo gli insiemi di host.
+    const byHost = new Map(derived.targets.map((t) => [t.host, t]))
+    for (const t of info.targets) {
+      const d = byHost.get(t.host)
+      if (!d) continue
+      if (t.sessions.length !== d.sessions.length)
+        out.push(
+          `target ${t.host}: stato dichiara ${t.sessions.length} sessioni, l'evidenza ne mostra ${d.sessions.length}`,
+        )
+      if (t.firstSeen !== d.firstSeen)
+        out.push(`target ${t.host}: stato dichiara firstSeen ${t.firstSeen}, l'evidenza mostra ${d.firstSeen}`)
+    }
+
     return out
   }
 
@@ -429,15 +521,41 @@ export namespace BountyState {
    * è uno stato bounty NON viene interpretato come tale).
    */
   export function isHuntingDir(dir: string): boolean {
-    const normalized = path.resolve(dir)
+    // Path CANONICI su entrambi i lati (`realpath`): `path.resolve` non
+    // dereferenzia i symlink, quindi un link dentro `programs/` che punta a una
+    // directory ESTERNA veniva riconosciuto come progetto e ci si scriveva
+    // dentro `state.json` — nella directory vittima. E una base scritta con un
+    // symlink/`..`/slash doppio faceva divergere il confronto dal path reale,
+    // spegnendo il gate su un progetto vero.
+    const normalized = canonical(dir)
+    const base = canonical(programsDir())
     // La cartella che CONTIENE i programmi non è un programma.
-    if (normalized === programsDir()) return false
+    if (normalized === base) return false
 
-    // Solo i discendenti diretti della base sono progetti di bounty.
-    const rel = path.relative(programsDir(), normalized)
-    if (rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)) return true
+    // Solo i FIGLI DIRETTI della base sono progetti di bounty, e solo se sono
+    // directory. Accettare qualunque profondita' faceva scambiare per progetto
+    // una sessione aperta in `<programma>/scans`: riceveva uno stato NUOVO
+    // (`program` = basename, `phase` = idle) presentato come fatto, mentre la
+    // fase dichiarata nel progetto padre spariva dall'orizzonte.
+    const rel = path.relative(base, normalized)
+    if (rel !== "" && !path.isAbsolute(rel) && !rel.split(path.sep).includes("..")) {
+      if (rel.split(path.sep).length !== 1) return false
+      try {
+        if (!fs.statSync(normalized).isDirectory()) return false
+      } catch {
+        return false
+      }
+      return true
+    }
 
-    return fs.existsSync(file(normalized))
+    // Fuori dal layout ufficiale: conta solo uno stato VALIDO. Il solo esistere
+    // di un file chiamato `state.json` non basta — una repo qualsiasi che ne ha
+    // uno (es. Terraform) armava il gate, e poi `bounty_status` non poteva
+    // sbloccarlo (lo schema non era quello bounty): sessione bloccata per
+    // sempre da un file estraneo, e con uno `state.json` parassita riscritto
+    // dentro. Un progetto di bounty spostato fuori dal layout continua a essere
+    // riconosciuto, perche' il suo stato e' valido.
+    return exists(normalized)
   }
 
   /**
