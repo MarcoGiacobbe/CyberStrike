@@ -46,7 +46,7 @@ versione deterministica e testabile dello stesso flusso.
 - [Credenziali H1 sync](tickets/credenziali-h1-sync.md): RISOLTO (2026-09-24) — l'identifier dell'API è lo username H1, non il valore del token (`markjacob9:<token>` → HTTP 200). `bb connect` ridotto a 2 passi, auto-retry con username, token mascherato in `whoami`. Commit `7fa7f8fee`
 - [Identity da policy](tickets/identity-da-policy.md): APERTO (2026-09-24) — `resolveIdentity()` pronta e verificata ma `cfg.identity` non viene mai popolato: `bb sync` lo conserva soltanto. Serve derivare header/UA dalle direttive del programma. Caso di test utile: programma HackerOne `security` (chiede header custom), NON bcny (non lo chiede)
 - [Help comandi bb](tickets/help-comandi-bb.md): APERTO (2026-09-24) — `cyberstrike bb --help` non elenca le azioni (connect/sync/mail/accounts/…); le descrizioni non riflettono il comportamento reale di `bb sync` (limite 100 scope senza paginazione, niente known issues/hacktivity, policy troncata a 500 char nel JSON). Difetti adiacenti annotati: paginazione assente, wildcard non convertiti in pattern
-- [Perimetro di scrittura](tickets/sandbox-scritture-perimetro.md): APERTO (2026-09-24) — l'entry point del flusso. `Instance.worktree` NON è la cwd: è la radice del repo git, e senza `.git` diventa `"/"` disattivando la sandbox (ask su ogni file). Decisione utente: vincolo SOLO sulla scrittura, lettura libera; vale ANCHE per bash. Da impostare il perimetro ESPLICITAMENTE, non derivarlo da `.git`
+- [Perimetro di scrittura](tickets/sandbox-scritture-perimetro.md): FASE 1 FATTA (2026-09-25, commit `84d3d4a34`) — gate implementato, 5 buchi chiusi dopo verifica avversariale indipendente (2 revisori: redirect nudo senza controlli, `always:["*"]` che cancellava il perimetro, path dinamici non confinati, metacaratteri glob nel nome programma). Restano aperti: V1/V2/V3/V6 dell'elenco Verifiche, e la decisione su `always:["*"]` a monte
 - [Stato del progetto](tickets/stato-progetto.md): APERTO (2026-09-24) — "leggere lo stato prima dei TODO" va imposto meccanicamente (todowrite negato finché lo stato non è caricato) + regola nel prompt come rinforzo. Scheduling ibrido: push per fase/triage, pull per i fatti. Disallineamento = blocco. Solo fatti dimostrabili in `state.json`; la narrazione dell'agente va in `notes/` e non è mai letta come stato
 - [Agente bounty + messaggio iniziale](tickets/agente-bounty-prompt-iniziale.md): APERTO (2026-09-24) — NON inventare l'agente: `web-application` esiste già con toolset completo (bash/hackbrowser/webfetch/report_vulnerability/triage_vulnerability/scope_check/methodology_status + skill WSTG). Manca l'agente bounty che nasce istruito per il programma specifico. Il messaggio deve dichiarare esplicitamente i dati che NON ha (known issues, identity) invece di fingere
 - [Comando `bb hunt`](tickets/hunt-comando-entry-point.md): APERTO (2026-09-24) — entry point: `cyberstrike bb hunt <program>` (nome scelto dall'utente, resta nel namespace bb). Bootstrap progetto → verifica program.json → carica stato → sessione con agente bounty + perimetro → messaggio con contesto. Idempotente: rilanciato a metà riprende senza duplicare
@@ -68,6 +68,22 @@ hunt-comando-entry-point      ← unisce tutto, ed è l'entry point della MAP
 Ticket indipendenti (nessuna dipendenza, si possono fare in qualsiasi momento):
 `identity-da-policy`, `help-comandi-bb`, e i difetti annotati in
 `help-comandi-bb` (paginazione GraphQL a 100, wildcard non convertiti).
+
+## Verifica — arretrati (NON verificato)
+
+Regola: **ogni verifica di sostanza passa da un subagent indipendente**, con
+mandato avversariale (cercare il difetto, non confermare il caso felice). La
+verifica dell'autore non conta come verifica. Un ticket non è "fatto" finché
+questo elenco non è vuoto per le sue voci.
+
+| # | Cosa manca | Su cosa | Perché non ora |
+|---|---|---|---|
+| V1 | E2E con `bb hunt` reale (catena comando → sessione → agente → perimetro) | sandbox-scritture-perimetro, stato-progetto, hunt-comando-entry-point | `bb hunt` non esiste ancora: nessun test attraversa la catena fino in fondo |
+| V2 | Attrito reale di `bash` in un hunting vero (quante conferme si ricevono, se il flusso è usabile) | sandbox-scritture-perimetro | si misura usandolo su un target, non testandolo |
+| V3 | Modifica `always: ["*"]` in `write.ts`/`edit.ts` — la difesa è a valle (`PermissionNext.ask`), la causa è a monte | sandbox-scritture-perimetro (buco #2) | tocca il comportamento di TUTTI gli agenti, non solo del perimetro: serve decisione |
+| V4 | `Paginazione a 100` in `bb sync` e wildcard non convertiti in pattern | help-comandi-bb | difetti annotati, non ancora ticket autonomi |
+| V5 | `security` come caso di test per `resolveIdentity()` (programma che CHIEDE header custom) | identity-da-policy | serve il fetch di un programma reale che richieda header |
+| V6 | Contenimento a livello kernel (il perimetro è un gate applicativo, non un sandbox del SO) | sandbox-scritture-perimetro | limite dichiarato per scelta di design |
 
 ## Not yet specified
 
