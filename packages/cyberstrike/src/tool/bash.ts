@@ -258,7 +258,17 @@ export const BashTool = Tool.define("bash", async () => {
         await ctx.ask({
           permission: "bash",
           patterns: Array.from(patterns),
-          always: Array.from(always),
+          // Il click "sempre" deve concedere il COMANDO CHE L'UTENTE HA VISTO,
+          // non la famiglia: `always` era fatto solo di famiglie (`<prefisso> *`,
+          // vedi BashArity.prefix) e in sessione perimetrata quelle non possono
+          // diventare permanenti, quindi il pulsante era un no-op e lo stesso
+          // comando innocuo (`ls`, `git status`) ri-chiedeva ogni volta.
+          // Il comando esatto e' gia' confinato per costruzione: si arriva a
+          // questa richiesta solo dopo che i path ESTERNI sono stati risolti, e
+          // sotto perimetro una scrittura esterna e' un deny immediato che
+          // lancia. La famiglia resta in coda: verra' filtrata (e registrata),
+          // perche' coprirebbe comandi che scrivono fuori progetto.
+          always: Array.from(patterns).concat(Array.from(always)),
           metadata: {},
         })
       }

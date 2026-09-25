@@ -168,3 +168,128 @@ describe("perimetro — B14: progetto coincidente con la radice del repo", () =>
     expect(PermissionNext.evaluate("edit", "/etc/passwd", bad).action).toBe("deny")
   })
 })
+
+describe("V8 — il matching non è letterale (P1/P2/P4)", () => {
+  // Il confine è riconosciuto dal MARCATORE esplicito (`boundary: true`), non
+  // dalla forma del ruleset: senza, un confine espresso con `ask` al posto del
+  // `deny` non veniva riconosciuto e tutti i filtri saltavano in silenzio.
+  const PERI: PermissionNext.Ruleset = [
+    { permission: "edit", pattern: "*", action: "deny", boundary: true },
+    { permission: "edit", pattern: "/progetto/*", action: "allow" },
+    { permission: "external_directory", pattern: "*", action: "deny", boundary: true },
+    { permission: "bash", pattern: "*", action: "ask", boundary: true },
+    { permission: "bash_unresolved", pattern: "*", action: "ask", boundary: true },
+  ]
+
+  test("P1: un pattern quasi-tutto non batte il deny", () => {
+    // `Wildcard.match("*", "?????*")` è false, ma `?????*` diventa `^.{5,}$` e
+    // copre comunque qualunque stringa di 5+ caratteri: il deny veniva scavalcato.
+    for (const pattern of ["?????*", "??????*", "*/*", "**/*", "/etc/*", "/etc/passwd", "*passwd*"]) {
+      const r = PermissionNext.evaluate("edit", "/etc/passwd", PERI, [{ permission: "edit", pattern, action: "allow" }])
+      expect(r.action).toBe("deny")
+    }
+  })
+
+  test("P1: sotto un confine, la concessione esterna su un'area governata perde", () => {
+    // Il confine è l'unica autorità sulle aree che governa (edit,
+    // external_directory): una `allow` da config/DB su `edit` non può
+    // riaprire ciò che il confine chiude — è proprio il buco P1/P2.
+    const r = PermissionNext.evaluate("edit", "/progetto/x.txt", PERI, [
+      { permission: "edit", pattern: "/progetto/*", action: "allow" },
+    ])
+    expect(r.action).toBe("deny")
+  })
+
+  test("controprova: su un'area NON governata dal confine, la concessione vale", () => {
+    // Il filtro è limitato all'allowlist: `read` non è un'area di scrittura, e
+    // la concessione dell'utente resta valida ("l'ultima regola vince").
+    const r = PermissionNext.evaluate("read", "/etc/shadow", PERI, [
+      { permission: "read", pattern: "/etc/*", action: "allow" },
+    ])
+    expect(r.action).toBe("allow")
+  })
+
+  test("controprova: le concessioni DEL confine restano (sono il confine)", () => {
+    const conConfine: PermissionNext.Ruleset = [
+      { permission: "edit", pattern: "*", action: "deny", boundary: true },
+      { permission: "edit", pattern: "/progetto/*", action: "allow", boundary: true },
+    ]
+    expect(PermissionNext.evaluate("edit", "/progetto/x.txt", conConfine).action).toBe("allow")
+  })
+
+  test("P2: una permission con jolly non scavalca il confine", () => {
+    // `COMMAND_PERMISSIONS.has("bash*")` era false: `{bash*,*,allow}` apriva
+    // bash E bash_unresolved. `{edit*,*,allow}` non trovava il deny su `edit`
+    // perché il confronto era per uguaglianza di stringa.
+    const casi: [string, string][] = [
+      ["bash", "python3 /tmp/x.py"],
+      ["bash_unresolved", "python3 /tmp/x.py"],
+      ["edit", "/etc/passwd"],
+      ["external_directory", "/etc/*"],
+    ]
+    for (const [permission, pattern] of casi) {
+      const r = PermissionNext.evaluate(permission, pattern, PERI, [
+        { permission: `${permission}*`, pattern: "*", action: "allow" },
+      ])
+      expect(r.action).not.toBe("allow")
+    }
+  })
+
+  test("P2: il catch-all {*,*,allow} non apre nulla", () => {
+    for (const [permission, pattern] of [
+      ["edit", "/etc/passwd"],
+      ["bash", "python3 /tmp/x.py"],
+      ["bash_unresolved", "python3 /tmp/x.py"],
+    ] as [string, string][]) {
+      const r = PermissionNext.evaluate(permission, pattern, PERI, [{ permission: "*", pattern: "*", action: "allow" }])
+      expect(r.action).not.toBe("allow")
+    }
+  })
+
+  test("P4: il filtro non tocca aree fuori dall'allowlist (l'override {question:allow})", () => {
+    // Prima l'override di `agent.ts` veniva ucciso quando il ruleset conteneva un
+    // deny su `question` (default dell'agente): il tool question restava morto.
+    const ruleset: PermissionNext.Ruleset = [
+      ...PERI,
+      { permission: "question", pattern: "*", action: "deny" },
+    ]
+    const r = PermissionNext.evaluate("question", "*", ruleset, [{ permission: "question", pattern: "*", action: "allow" }])
+    expect(r.action).toBe("allow")
+  })
+
+  test("il confine è riconosciuto dal marcatore, non dalla forma del ruleset", () => {
+    // Un confine che NON usa `deny` su external_directory (la forma che
+    // `isPerimeter` cercava prima): senza marcatore non veniva riconosciuto e i
+    // filtri saltavano in silenzio. Qui il confine è `ask` su due aree.
+    const senzaForma: PermissionNext.Ruleset = [
+      { permission: "edit", pattern: "*", action: "ask", boundary: true },
+      { permission: "bash", pattern: "*", action: "ask", boundary: true },
+    ]
+    // La famiglia bash non diventa permanente (famiglia su comando).
+    expect(
+      PermissionNext.evaluate("bash", "python3 /tmp/x.py", senzaForma, [
+        { permission: "bash", pattern: "python3 *", action: "allow" },
+      ]).action,
+    ).not.toBe("allow")
+
+    // E la controprova: senza il marcatore le stesse regole non attivano nulla.
+    const senzaMarcatore: PermissionNext.Ruleset = [
+      { permission: "edit", pattern: "*", action: "ask" },
+      { permission: "bash", pattern: "*", action: "ask" },
+    ]
+    expect(
+      PermissionNext.evaluate("bash", "python3 /tmp/x.py", senzaMarcatore, [
+        { permission: "bash", pattern: "python3 *", action: "allow" },
+      ]).action,
+    ).toBe("allow")
+  })
+
+  test("senza marcatore il ruleset resta una preferenza dell'utente", () => {
+    // "L'ultima regola vince": non si cambia la semantica di un ruleset normale.
+    const normale: PermissionNext.Ruleset = [
+      { permission: "edit", pattern: "*", action: "deny" },
+      { permission: "edit", pattern: "*", action: "allow" },
+    ]
+    expect(PermissionNext.evaluate("edit", "/etc/passwd", normale).action).toBe("allow")
+  })
+})

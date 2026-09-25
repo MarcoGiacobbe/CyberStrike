@@ -316,7 +316,7 @@ describe("tool.bash permissions", () => {
     })
   })
 
-  test("always pattern has space before wildcard to not include different commands", async () => {
+  test("always propone il COMANDO ESATTO per primo, e la famiglia dopo", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
       directory: tmp.path,
@@ -332,8 +332,16 @@ describe("tool.bash permissions", () => {
         await bash.execute({ command: "ls -la", description: "List" }, testCtx)
         const bashReq = requests.find((r) => r.permission === "bash")
         expect(bashReq).toBeDefined()
-        const pattern = bashReq!.always[0]
-        expect(pattern).toBe("ls *")
+
+        // Il PRIMO pattern e' il comando esatto: in sessione perimetrata le
+        // famiglie (`ls *`) non possono diventare permanenti, quindi un `always`
+        // fatto di sole famiglie rendeva il pulsante un no-op e lo stesso comando
+        // innocuo ri-chiedeva a ogni chiamata. Il comando esatto e' gia'
+        // confinato: i path esterni sono risolti prima di arrivare qui.
+        expect(bashReq!.always[0]).toBe("ls -la")
+        // La famiglia resta proposta (in coda): verra' filtrata dal perimetro,
+        // perche' coprirebbe comandi che scrivono fuori progetto.
+        expect(bashReq!.always).toContain("ls *")
       },
     })
   })

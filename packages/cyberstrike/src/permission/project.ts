@@ -423,11 +423,19 @@ export namespace ProjectPerimeter {
     }
     const allowPatterns = [rel + "/*", dir + "/*"]
 
+    // `boundary: true` su TUTTE le regole del perimetro: e' il marcatore che
+    // `isPerimeter` legge (non piu' la forma del ruleset) e distingue le
+    // concessioni DEL confine — i path dentro il progetto — dalle concessioni
+    // di altri canali (click "sempre", DB, config), che su un'area negata
+    // verrebbero filtrate.
+    const deny = (permission: string): Rule => ({ permission, pattern: "*", action: "deny", boundary: true })
+    const allow = (permission: string, pattern: string): Rule => ({ permission, pattern, action: "allow", boundary: true })
+
     return [
-      { permission: "edit", pattern: "*", action: "deny" },
-      ...allowPatterns.map((pattern): Rule => ({ permission: "edit", pattern, action: "allow" })),
-      { permission: "external_directory", pattern: "*", action: "deny" },
-      ...allowPatterns.map((pattern): Rule => ({ permission: "external_directory", pattern, action: "allow" })),
+      deny("edit"),
+      ...allowPatterns.map((pattern) => allow("edit", pattern)),
+      deny("external_directory"),
+      ...allowPatterns.map((pattern) => allow("external_directory", pattern)),
       // bash: la classificazione dei comandi è fatta in bash.ts, che manda
       // pattern testuali (non path). Un deny secco bloccherebbe anche il
       // riconoscimento, quindi resta `ask` — è il gate di classe C/D.

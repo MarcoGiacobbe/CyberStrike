@@ -33,6 +33,18 @@ export namespace PermissionNext {
       permission: z.string(),
       pattern: z.string(),
       action: Action,
+      /**
+       * Marcatore ESPLICITO di confine (vedi `buildProjectRuleset`).
+       *
+       * Prima il perimetro si riconosceva dalla FORMA del ruleset (cercando un
+       * deny su external_directory): un confine espresso in modo diverso — o
+       * anche solo un `ask` al posto del `deny` — non veniva riconosciuto, e
+       * tutti i filtri di `evaluate` saltavano in silenzio. Il confine e' una
+       * proprieta' della REGOLA, dichiarata da chi la emette, non dedotta da
+       * chi la legge. Opzionale per compatibilita': i ruleset scritti prima
+       * continuano a leggersi.
+       */
+      boundary: z.boolean().optional(),
     })
     .meta({
       ref: "PermissionRule",
@@ -108,12 +120,76 @@ export namespace PermissionNext {
   }
 
   /**
-   * Un pattern che copre TUTTO (`*`, `**`, `?*`, `?`): non seleziona un caso,
-   * seleziona un dominio. `Wildcard.match` e' la definizione di "matcha
-   * qualunque stringa", quindi si usa quella invece di una lista di forme.
+   * Un confine e' presente nel ruleset? Si cerca il MARCATORE ESPLICITO emesso
+   * da `buildProjectRuleset`, non la forma del ruleset.
+   *
+   * Prima si riconosceva il perimetro cercando un `deny` su external_directory:
+   * un confine espresso in modo diverso (o anche solo con `ask` al posto del
+   * `deny`) non veniva riconosciuto, e TUTTI i filtri saltavano in silenzio —
+   * il confine restava apparentemente in piedi mentre l'`always` lo svuotava.
    */
-  function coversEverything(pattern: string): boolean {
-    return Wildcard.match("*", pattern)
+  function isPerimeter(ruleset: Ruleset): boolean {
+    return ruleset.some((r) => r.boundary === true)
+  }
+
+  /**
+   * Una concessione `allow` che NON deve partecipare alla valutazione, perche'
+   * annullerebbe un confine invece di applicarlo.
+   *
+   * La proprieta' che conta e' la PROVENIENZA, non la forma del pattern. Il
+   * primo tentativo cercava i pattern "che coprono tutto" (`coversEverything`):
+   * era una euristica indecidibile, e sbagliava in modo silenzioso —
+   * `Wildcard.match("*", "?????*")` e' false, ma `?????*` diventa `^.{5,}$` e
+   * copre comunque `/etc/passwd`, quindi un `allow` con quel pattern scavalcava
+   * il deny. Non si indovina: si distingue chi ha emesso la regola.
+   *
+   * - Le `allow` del confine stesso (`boundary: true`, emesse da
+   *   `buildProjectRuleset` per i path DENTRO il progetto) restano.
+   * - Una `allow` da un altro canale (click "sempre", DB `approved`, config)
+   *   su un'area che il confine NEGA non entra: e' esattamente il caso
+   *   `{edit, /etc/*, allow}` che apriva tutto, e sotto un confine una
+   *   concessione su un'area negata e' o ridondante (se interna, il confine la
+   *   concede gia') o un buco (se esterna).
+   * - FAMIGLIA su una permission a testo di comando: `python3 *` copre
+   *   `python3 -c "open('/etc/x','w')"`. La classificazione dei comandi (che
+   *   decide se chiedere) viene saltata quando il permesso e' gia' concesso,
+   *   quindi la famiglia non puo' diventare permanente. Il COMANDO ESATTO si':
+   *   e' gia' confinato per costruzione (i path esterni sono risolti prima).
+   *
+   * Il filtro si applica SOLO alle permission di `FILTERABLE`: fuori da quelle
+   * aree il ruleset resta una preferenza dell'utente e "l'ultima regola vince".
+   */
+  function voidsBoundary(rule: Rule, merged: Ruleset): boolean {
+    if (rule.action !== "allow") return false
+
+    // I casi valgono SOLO in una sessione perimetrata.
+    if (!isPerimeter(merged)) return false
+
+    // Le concessioni del confine stesso non si filtrano: sono il confine.
+    if (rule.boundary === true) return false
+
+    if (!isFilterable(rule.permission)) return false
+
+    if (isCommandPermission(rule.permission) && hasWildcard(rule.pattern)) return true
+
+    if (boundaryDenies(rule.permission, merged)) return true
+
+    return false
+  }
+
+  /**
+   * Esiste un `deny` DEL CONFINE che copre QUESTA area? Il confronto e' per area
+   * (`Wildcard.match`), non per uguaglianza: `{edit*, *, allow}` non trovava il
+   * deny su `edit` perche' il confronto era `r.permission === rule.permission`,
+   * e lo scavalcava.
+   *
+   * Solo i deny del confine contano: un `deny` di config su un'area senza
+   * confine non deve trasformare le concessioni successive in regole morte.
+   */
+  function boundaryDenies(permission: string, merged: Ruleset): boolean {
+    return merged.some(
+      (r) => r.boundary === true && r.action === "deny" && sameArea(permission, r.permission),
+    )
   }
 
   /** Un pattern con jolly: seleziona una FAMIGLIA di valori, non un valore. */
@@ -128,50 +204,43 @@ export namespace PermissionNext {
    * accorgersene perche' la classificazione (che decide se chiedere) viene
    * saltata quando il permesso e' gia' concesso. Per queste permission la
    * famiglia non puo' diventare una concessione permanente.
+   *
+   * Il confronto e' per AREA (`Wildcard.match`), non per uguaglianza: un
+   * `{bash*, *, allow}` scavalcava il controllo perche' il Set non contiene
+   * esattamente "bash*", e apriva `bash` E `bash_unresolved`.
    */
-  const COMMAND_PERMISSIONS = new Set(["bash", "bash_unresolved"])
+  const COMMAND_PERMISSIONS = ["bash", "bash_unresolved"]
 
   /**
-   * Firna del perimetro di scrittura dei progetti di bounty: un `deny` su
-   * external_directory (vedi `buildProjectRuleset`, src/permission/project.ts).
+   * Due nomi di permission si riferiscono alla stessa area? Il confronto è
+   * BIDIREZIONALE: una regola può nominare l'area con un jolly (`bash*`, la
+   * forma che `fromConfig` emette) e l'area può essere nominata esattamente
+   * (`bash`). Con una sola direzione `{bash*, *, allow}` non veniva riconosciuto
+   * come appartenente all'area `bash` e scavalcava il confine.
    */
-  function isPerimeter(ruleset: Ruleset): boolean {
-    return ruleset.some((r) => r.permission === "external_directory" && r.action === "deny")
+  function sameArea(a: string, b: string): boolean {
+    return Wildcard.match(a, b) || Wildcard.match(b, a)
+  }
+
+  function isCommandPermission(permission: string): boolean {
+    return COMMAND_PERMISSIONS.some((p) => sameArea(permission, p))
   }
 
   /**
-   * Una concessione `allow` che NON deve partecipare alla valutazione, perche'
-   * annullerebbe un confine invece di applicarlo. Due casi, entrambi provati
-   * come aggirabili (vedi wayfinder/bb-autonomous-flow/tickets/
-   * verifica-stato-gate-always.md):
+   * Permission che il filtro puo' toccare. Il filtro NON e' un meccanismo
+   * generale: esiste per difendere un confine di scrittura, e fuori da quelle
+   * aree ucciderebbe concessioni legittime. E' successo per davvero: l'override
+   * `{question: "allow"}` di `agent.ts` veniva filtrato quando il ruleset
+   * conteneva un deny su `question` (default dell'agente), e il tool `question`
+   * restava morto con DeniedError.
    *
-   * 1. COPRE TUTTO su una permission che il ruleset NEGA. `approved` viene
-   *    valutato per ultimo (`findLast`) e vincerebbe sul `deny`: un solo
-   *    `{edit, "*", allow}` — cliccato o salvato su DB — riapre una sessione
-   *    che il perimetro aveva chiuso. Il confine e' una decisione di
-   *    sicurezza: non si revoca con una concessione.
-   *
-   * 2. FAMIGLIA su una permission a testo di comando, in sessione perimetrata.
-   *    `python3 *` copre `python3 -c "open('/etc/x','w')"`: dopo un click
-   *    "sempre" su un comando innocuo, la scrittura fuori progetto non chiede
-   *    piu' nulla.
+   * E' un'ALLOWLIST: un'area nuova non e' filtrata finche' non viene aggiunta,
+   * quindi un errore qui non riapre il confine in silenzio.
    */
-  function voidsBoundary(rule: Rule, merged: Ruleset): boolean {
-    if (rule.action !== "allow") return false
+  const FILTERABLE = ["edit", "write", "patch", "multiedit", "external_directory", ...COMMAND_PERMISSIONS]
 
-    // Entrambi i casi valgono SOLO in una sessione perimetrata. Fuori da un
-    // confine il ruleset e' una preferenza dell'utente e "l'ultima regola
-    // vince" resta la semantica: filtrare anche li' cambierebbe il
-    // significato di qualunque config che neghi e poi riammetta in blocco —
-    // cosa che i test generali di `evaluate` verificano.
-    if (!isPerimeter(merged)) return false
-
-    if (coversEverything(rule.pattern) && merged.some((r) => r.permission === rule.permission && r.action === "deny"))
-      return true
-
-    if (COMMAND_PERMISSIONS.has(rule.permission) && hasWildcard(rule.pattern)) return true
-
-    return false
+  function isFilterable(permission: string): boolean {
+    return FILTERABLE.some((p) => sameArea(permission, p))
   }
 
   const state = Instance.state(() => {
