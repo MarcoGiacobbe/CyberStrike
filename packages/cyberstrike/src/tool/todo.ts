@@ -2,8 +2,41 @@ import z from "zod"
 import { Tool } from "./tool"
 import DESCRIPTION_WRITE from "./todowrite.txt"
 import { Todo } from "../session/todo"
+import { BountyState } from "../session/bounty-state"
+import { Instance } from "../project/instance"
 
-export const TodoWriteTool = Tool.define("todowrite", {
+// Gate del progetto-hunting: "leggere lo stato prima dei TODO" è imposto
+// MECCANICAMENTE, non con un'istruzione di prompt (che salta se il contesto è
+// lungo o il modello è debole). Il tool manca all'agente finché lo stato non è
+// stato caricato in questa sessione — vedi ticket stato-progetto.
+//
+// Il flag vive in Instance.state (per-sessione, azzerato al riavvio): la
+// sessione di hunting lo setta caricando lo stato. Fuori da una sessione di
+// hunting (progetti normali) non c'è confine e il gate non si applica: la
+// directory di lavoro non è un progetto bounty.
+function gate(dir: string, sessionID: string): string | undefined {
+  if (!isHuntingProject(dir)) return undefined
+  if (BountyState.loaded(sessionID)) return undefined
+  return (
+    "Questo è un progetto di bug bounty: prima di pianificare devi caricare lo stato attuale, " +
+    "per non ripetere lavoro già fatto. Il tool per farlo è `bounty_status`. " +
+    "Non è una raccomandazione: finché non lo chiami, todowrite resta bloccato."
+  )
+}
+
+/** Un progetto di hunting è una directory che contiene (o deve contenere) uno stato bounty. */
+function isHuntingProject(dir: string): boolean {
+  try {
+    return BountyState.isHuntingDir(dir)
+  } catch {
+    return false
+  }
+}
+
+export const TodoWriteTool = Tool.define<
+  z.ZodObject<{ todos: z.ZodArray<z.ZodObject<typeof Todo.Info.shape>> }>,
+  { todos: Todo.Info[]; blockedBy?: string }
+>("todowrite", {
   description: DESCRIPTION_WRITE,
   parameters: z.object({
     todos: z.array(z.object(Todo.Info.shape)).describe("The updated todo list"),
@@ -15,6 +48,15 @@ export const TodoWriteTool = Tool.define("todowrite", {
       always: ["*"],
       metadata: {},
     })
+
+    const blocked = gate(Instance.directory, ctx.sessionID)
+    if (blocked) {
+      return {
+        title: "blocked — load project state first",
+        output: blocked,
+        metadata: { todos: params.todos, blockedBy: "bounty-state-not-loaded" },
+      }
+    }
 
     const activeCount = params.todos.filter((x) => x.status === "pending" || x.status === "in_progress").length
     if (activeCount > 25) {

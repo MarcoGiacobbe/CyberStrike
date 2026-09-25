@@ -7,6 +7,7 @@ import { BatchTool } from "./batch"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
 import { TodoWriteTool, TodoReadTool } from "./todo"
+import { BountyStatusTool } from "./bounty-status"
 import { ReportVulnerabilityTool } from "./vulnerability"
 import { TriageVulnerabilityTool } from "./triage-vulnerability"
 import { WebFetchTool } from "./webfetch"
@@ -154,6 +155,7 @@ export namespace ToolRegistry {
       TaskTool,
       WebFetchTool,
       TodoWriteTool,
+      BountyStatusTool,
       ReportVulnerabilityTool,
       TriageVulnerabilityTool,
       // TodoReadTool,
