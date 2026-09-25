@@ -162,9 +162,21 @@ export const BashTool = Tool.define("bash", async () => {
         let commandText = node.parent?.type === "redirected_statement" ? node.parent.text : node.text
 
         const command = []
+        // Un nodo con valore DINAMICO (`$(...)`, backtick, `${...}`) rende
+        // l'argomento non ispezionabile: il path reale e' noto solo a runtime.
+        // Scartarlo (V9/G2) lasciava `touch $(echo /tmp/pwned)` senza path e senza
+        // `unresolved`, quindi senza alcuna richiesta: un click "sempre" lo
+        // rendeva una scrittura esterna permanente. Qui si RACCOGLIE il testo
+        // grezzo del nodo, e piu' sotto finisce in `unresolved`.
+        let dinamico = false
         for (let i = 0; i < node.childCount; i++) {
           const child = node.child(i)
           if (!child) continue
+          if (child.type === "command_substitution" || child.type === "expansion") {
+            dinamico = true
+            command.push(child.text)
+            continue
+          }
           if (
             child.type !== "command_name" &&
             child.type !== "word" &&
@@ -174,6 +186,8 @@ export const BashTool = Tool.define("bash", async () => {
           ) {
             continue
           }
+          // `$VAR` dentro una stringa o una parola: non ispezionabile.
+          if (/[$`]/.test(child.text)) dinamico = true
           command.push(child.text)
         }
 
@@ -188,6 +202,12 @@ export const BashTool = Tool.define("bash", async () => {
         if (kind === "write") {
           for (const c of pathCandidates(name, command)) candidateSet.add(c)
         }
+
+        // Il comando scrive e contiene un valore dinamico: il path NON e'
+        // ispezionabile, quindi non si puo' affermare che stia dentro il
+        // progetto. Va in `unresolved`, che chiede conferma all'utente. Senza
+        // questo, `touch $(echo /tmp/x)` passava in silenzio (V9/G2).
+        if (dinamico && kind === "write") unresolved.add(commandText)
 
         if (kind === "opaque") {
           // scrittura non ispezionabile staticamente (`python3 -c "open(...)"`):

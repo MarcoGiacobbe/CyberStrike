@@ -49,7 +49,6 @@ export const READ_ONLY = new Set([
   "whoami",
   "id",
   "uname",
-  "env",
   "printenv",
   "date",
   "basename",
@@ -109,6 +108,12 @@ export const WRITE_COMMANDS: Record<
   string,
   { writeFlags?: string[]; inPlaceFlags?: string[]; keyValueFlags?: string[] }
 > = {
+  // `env` e' un WRAPPER, non un lettore: senza argomenti stampa l'ambiente, ma
+  // `env CMD ARGS` ESEGUE CMD. Elencarlo in READ_ONLY apriva la scrittura esterna
+  // arbitraria — `env touch /tmp/x` non produceva alcuna richiesta, e un click
+  // "sempre" la rendeva permanente (V9/G1). Va in WRITE_COMMANDS, cosi' i suoi
+  // argomenti posizionali vengono raccolti come path candidati.
+  env: {},
   cd: {},
   rm: {},
   rmdir: {},
@@ -247,7 +252,40 @@ export function pathCandidates(name: string, args: string[]): string[] {
   const inPlaceFlags = spec.inPlaceFlags ?? []
   const keyValueFlags = spec.keyValueFlags ?? []
 
-  const isPathFlag = (arg: string) => writeFlags.some((f) => arg === f)
+  /**
+   * `-o/tmp/x` e un flag ACCORPATO: la lettera segue il flag e il resto e' il suo
+   * valore. `-o` da solo e` il flag esatto; `-so/tmp/x` e` un aggregato dove il
+   * path e` l'ultimo segmento. La forma lunga (`--output=/tmp/x`) si gestisce
+   * separatamente, perche' usa `=` e non accetta aggregati.
+   */
+  const isAttachedFlag = (arg: string, flag: string) =>
+    arg.length > flag.length && arg.startsWith(flag) && !flag.startsWith("--")
+
+  /**
+   * Il path contenuto DENTRO il flag accorpato: in `-so/tmp/x` il flag `-o`
+   * introduce `/tmp/x`. La forma lunga (`--output=/tmp/x`) e` gestita a
+   * parte, perche' il separatore e` `=` e non l'accorciamento.
+   */
+  const attachedValue = (arg: string, flags: string[]): string => {
+    for (const f of flags) {
+      if (f.startsWith("--") || !isAttachedFlag(arg, f)) continue
+      // solo se il carattere precedente e` una lettera: `-o/tmp/x` (accorpato),
+      // non `--output` ne un flag che per caso inizia con lo stesso testo.
+      const value = arg.slice(f.length)
+      if (/^\/[^\s/]/.test(value) || /^~[^\s/]/.test(value)) return value
+    }
+    return ""
+  }
+
+  const isPathFlag = (arg: string) =>
+    writeFlags.some(
+      (f) =>
+        arg === f ||
+        // forma lunga: `--output=/tmp/x`
+        (f.startsWith("--") && arg.startsWith(f + "=")) ||
+        // forma accorpata: `-o/tmp/x`, `-O/tmp/x`
+        isAttachedFlag(arg, f),
+    )
   const isKeyValuePathFlag = (arg: string) => keyValueFlags.some((f) => arg.startsWith(f))
   const isInPlaceFlag = (arg: string) => inPlaceFlags.some((f) => arg === f)
 
@@ -261,6 +299,15 @@ export function pathCandidates(name: string, args: string[]): string[] {
       continue
     }
     if (isPathFlag(arg)) {
+      // Il path puo' stare NEL flag accorpato o nella forma lunga con `=`:
+      // in entrambi i casi e` dentro `arg`, non nell'argomento successivo.
+      const inline =
+        (arg.startsWith("--") && arg.indexOf("=") !== -1 ? arg.slice(arg.indexOf("=") + 1) : "") ||
+        attachedValue(arg, writeFlags)
+      if (inline) {
+        candidates.push(inline)
+        continue
+      }
       const next = args[i + 1]
       if (next && !next.startsWith("-")) {
         candidates.push(next)

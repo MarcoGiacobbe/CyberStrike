@@ -141,7 +141,15 @@ export namespace BountyState {
     // un link la cui destinazione è stata rimossa. Uno `state.json` che esiste
     // (ed è rotto) verrebbe così classificato "assente" e sovrascritto —
     // esattamente ciò che la regola "lo stato invalido blocca" vieta.
-    if (presence(dir) === "absent") throw new Unreadable(`nessun state.json in ${dir}`)
+    // Una sola `lstat`: due chiamate lascbero una finestra in cui la voce
+    // cambia tra il controllo e la lettura.
+    const stato = presence(dir)
+    if (stato === "absent") throw new Unreadable(`nessun state.json in ${dir}`)
+
+    // FIFO e socket: presenti nell'albero ma non sono file. Leggerli bloccherebbe
+    // il processo per sempre, quindi si rifiutano PRIMA di qualsiasi lettura.
+    if (stato === "unreadable")
+      throw new Unreadable(`state.json presente ma non e' un file leggibile in ${p}`)
 
     let raw: unknown
     try {
@@ -189,9 +197,15 @@ export namespace BountyState {
    * tornava "assente", lo stato veniva sovrascritto con `idle` e la fase
    * dichiarata spariva — lo stesso esito che il fix di B1 doveva impedire.
    */
-  function presence(dir: string): "absent" | "present" {
+  function presence(dir: string): "absent" | "present" | "unreadable" {
     try {
-      fs.lstatSync(file(dir))
+      const st = fs.lstatSync(file(dir))
+      // Una FIFO o un socket NON e' uno stato. `readFileSync` su una named pipe
+      // si blocca per SEMPRE in attesa di un writer che non arrivera' mai,
+      // congelando il processo (V9/D5). Sono quindi "presenti ma non
+      // leggibili": la stessa classe del symlink rotto, non "assenti" (che
+      // verrebbero sovrascritte cancellando la fase dichiarata).
+      if (st.isFIFO() || st.isSocket()) return "unreadable"
       return "present"
     } catch {
       return "absent"
@@ -450,8 +464,14 @@ export namespace BountyState {
     // Il discriminante e' la PRESENZA FISICA del file (`lstat`), non `exists()`:
     // quest'ultimo inghiotte anche lo stato invalido, e `existsSync` segue i
     // symlink (un link rotto tornerebbe "assente" e verrebbe sovrascritto).
+    // "unreadable" (FIFO, socket) NON e' "assente": la voce c'e' nell'albero e
+    // rigenerarla distruggerebbe una parte dichiarata, esattamente cio' che
+    // questa funzione esiste per impedire. Va propagata come `Unreadable`.
+    const stato = presence(dir)
     let base: Info
-    if (presence(dir) === "present") {
+    if (stato === "unreadable") {
+      throw new Unreadable(`state.json presente ma non e' un file leggibile in ${file(dir)}`)
+    } else if (stato === "present") {
       base = read(dir) // stato invalido -> Unreadable, si propaga
     } else {
       // Manca del tutto: progetto nuovo, si parte da `idle`.
