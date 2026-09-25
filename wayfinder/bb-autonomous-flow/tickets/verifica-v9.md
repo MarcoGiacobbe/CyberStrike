@@ -205,6 +205,72 @@ dell'estrazione, quindi di `external_directory`.
 
 1–3 sono i soli con impatto di sicurezza **oggi**. Il resto è attrito o robustezza.
 
+## Esiti — applicati in `61639af2a`
+
+**Chiusi** (typecheck 11/11, 935 test, ogni test verificato fallire a difesa spenta):
+G1 · G2 · D5 · D10
+
+**D5 ha dato un difetto che il subagent non aveva visto.** Estendendo
+`presence()` con il terzo stato `"unreadable"`, `refresh()` confrontava ancora con
+`"present"` e quindi cadeva nel ramo "manca del tutto": **rigenerava la FIFO**.
+Non era un bug preesistente, era introdotto dalla mia stessa estensione — cioè
+esattamente il buco che B1 vieta di riaprire, riaperto dalla difesa. L'ho visto
+solo perché il test che ho scritto guardava `lstat` dopo `refresh()` invece di
+guardare solo il fatto che lanci. Aggiornato anche `refresh()`.
+
+**Un mio test era sbagliato**, non il codice: ho scritto che `curl -sS
+https://x` non deve produrre `https://x` come candidato, ma tutti i posizionali
+sono candidati per contratto (`project.ts:106`). Il test è stato riscritto sul
+flag (`-sS`), che è ciò che volevo provare davvero.
+
+**Non chiusi, in attesa di decisione:** G3 e G4 — entrambi hanno semantica che
+non è univoca, vedi sotto.
+
+---
+
+## La decisione che spetta a te: G4
+
+Ho corretto `voidsBoundary` **tre volte**, in due direzioni opposte:
+
+1. prima versione — filtravo ogni `allow` che coprisse un'area negata, e in
+   `evaluate` (fuori perimetro) uccideva 5 test legittimi
+2. seconda — ho ristretto il filtro al perimetro, ma per **forma** del ruleset
+   (`external_directory` + deny), e mi sono accorto che un confine espresso in
+   `ask` non sarebbe stato riconosciuto: tutti i filtri avrebbero saltato in
+   silenzio
+3. terza — marcatore esplicito `boundary: true`, e l'`allowlist` `FILTERABLE`
+   perché l'override `{question: 'allow'}` era ucciso
+
+Ora V9 mi dice che `boundaryDenies` guarda **solo l'area**, mai il pattern:
+
+```
+evaluate("edit", "/altro/file.txt", perim, [
+  { permission: "edit", pattern: "/tmp/altro/*", action: "deny", boundary: true },
+  { permission: "edit", pattern: "/altro/*",     action: "allow" },
+])
+→ deny    (atteso: allow — il deny copre /tmp/altro, non /altro)
+```
+
+Non l'ho toccato. Le due letture possibili sono entrambe legittime e hanno
+conseguenze opposte:
+
+**(a) Il confine è l'unica autorità sull'area.** Se nega `edit`, tutte le
+concessioni esterne su `edit` sono o ridondanti o pericolose → il comportamento
+attuale è corretto. `allow` richieste dall'utente su quell'area semplicemente
+non esistono sotto un confine.
+
+**(b) Il confine nega solo dove dice.** Un deny stretto è una scelta, e le
+concessioni fuori da quel deny devono valere. Allora `boundaryDenies` deve
+guardare `r.pattern`: esiste un deny del confine **che copre questo path**?
+
+Oggi (a) e (b) coincidono, perché `buildProjectRuleset` emette sempre `deny` con
+pattern `*`. Divergono appena il confine diventa più stretto — cioè al primo
+`bb hunt` che vuole consentire, diciamo, `/tmp` per gli strumenti di scansione.
+
+**Non è una mia decisione**: cambia chi può concedere cosa dentro il perimetro,
+e il perimetro è la promessa che l'agente non scrive fuori. Dimmi quale delle
+due è quella che vuoi, e il fix è cinque righe.
+
 ## Non è un difetto, da segnalare
 
 **E1 resta vero**: `buildProjectRuleset` e `diagnose` non hanno **chiamanti di
