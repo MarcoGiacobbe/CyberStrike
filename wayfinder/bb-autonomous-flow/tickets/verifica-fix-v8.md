@@ -239,3 +239,52 @@ Non tutto e' da buttare; questi tengono:
 6. **P10/P11/P12** (emissione e fatti): sanificazione all'emissione; gate
    "sticky" e layout-only o schema-validato; derive con path canonico;
    `divergences()` sulle proprieta' che contano.
+---
+
+# Esiti dei fix V8 (passi 2-6)
+
+Stato: **FATTI** — commit `9d7afe936` (stato + percorsi) e `260e03516` (matching +
+click). Typecheck 11/11, **921 test verdi**, ogni chiusura ha un test che
+fallisce con la difesa spenta.
+
+| Buco | Fix | Come |
+|---|---|---|
+| P5 | guardia su `rel` con qualsiasi `..` | `project.ts`: non piu' `rel === ""` ma la classe "salita" (`dir=/tmp`, `dir=/` ora lanciano) |
+| P6 | `realpath` sui due lati | `bounty-state.ts`: `canonical()`; un symlink dentro `programs/` che punta fuori non e' piu' un progetto (e non ci si scrive) |
+| P7 | base canonica | `root()` risolve il valore d'ambiente |
+| P8 | `lstat` invece di `existsSync` | `presence()`: un link rotto e' "presente ma non leggibile", non "assente" |
+| P9 | identita' dello stato | `read()` rifiuta uno `state.json` che dichiara un'altra directory (confronto su path canonici) |
+| P10 | sanificazione all'EMISSIONE | `field()` in `bounty-status.ts`: una regola sola, non campo per campo |
+| P11 | gate non armato in anticipo; figli diretti | `bounty_status` non marca "caricato" fuori dal progetto; `isHuntingDir` accetta solo `<base>/<programma>` (directory) o uno stato VALIDO |
+| P12 | fatti e divergenze | `sessions()`/`derive` su path canonico; `divergences()` confronta anche la scomposizione e la prova dei target |
+| P1/P2 | matching per PROVENIENZA | `voidsBoundary`: una `allow` esterna su un'area che il confine nega non entra; `sameArea` (bidirezionale) al posto dell'uguaglianza |
+| P4 | allowlist delle aree filtrabili | `FILTERABLE`: fuori da quelle aree il ruleset resta una preferenza dell'utente (l'override `{question:allow}` rivive) |
+| P3 | click "sempre" utile | `bash.ts`: `always` propone il COMANDO ESATTO per primo (gia' confinato), la famiglia in coda (filtrata) |
+| E1 (meta') | marcatore esplicito | `Rule.boundary`: `isPerimeter` legge il marcatore, non la forma del ruleset |
+
+## Una correzione al mio stesso fix
+
+Il primo tentativo di P1 usava `coversEverything` con stringhe-sonda: una
+euristica **indecidibile** che sbagliava in silenzio (`?????*` copre
+`/etc/passwd` ma non la stringa vuota). L'ho sostituita con la provenienza:
+non si indovina la forma del pattern, si distingue **chi ha emesso la regola**.
+
+## Cosa resta (passo 1)
+
+**Il cablaggio del perimetro non e' un fix di V8: e' il ticket `bb hunt`.** Il
+marcatore `boundary` ora esiste, quindi cablare e' possibile — ma l'entry point
+(`cyberstrike bb hunt <program>` che chiama `session.createNext({permission:
+buildProjectRuleset(...)})`) e' un ticket a se', con il suo design e le sue
+scelte (agente bounty, messaggio iniziale, idempotenza). Va fatto DOPO
+`agente-bounty-prompt-iniziale`, e con il design approvato.
+
+Fino ad allora il perimetro resta una difesa di libreria: nessun percorso caldo
+lo istanzia.
+
+## Verifica
+
+Questi fix sono dell'autore: **non contano come verifica**. V9 (subagent
+indipendente, mandati separati) e' stata lanciata il 2026-09-25 su: marcatore
+`boundary` (si puo' forgiare? una config puo' dichiararsi confine?), il nuovo
+`always` esatto (il click puo' concedere qualcosa di pericoloso?), e i fix di
+stato/percorso (symlink, identita', profondita'). Arretrato tracciato in MAP.
