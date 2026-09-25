@@ -2,23 +2,267 @@
 
 **Data:** 2026-09-25
 **Metodo:** 2 subagent indipendenti con mandato avversariale (batch
-`deleg_b16428de`), più riproduzione delle prove critiche da parte dell'autore
-**solo dopo** che i revisori le avevano individuate (i numeri qui sotto sono
-output reali, non deduzioni). Ruolo dei revisori: cercare il difetto, non
-confermare il caso felice.
+`deleg_b16428de`, task-0 completato con report integrale; task-1 interrotto a
+lavoro avanzato e prove riprodotte dall'autore), più riproduzione delle prove
+critiche **dopo** la segnalazione dei revisori. Numeri qui sotto = output reali.
+
+**Nota di correttezza:** la prima stesura di questo ticket (commit
+`dd00ff001`) si basava sul log troncato del task-0 e conteneva errori —
+dichiarava "lo stato invalido blocca davvero" mentre il revisore aveva
+provato il contrario (B1). Questa versione sostituisce quella, integrando il
+report completo (`subagent-summary-0-20260925_142616_037505.txt`). Le
+riproduzioni indipendenti dell'autore sono marcate.
 
 **Verdetto sintetico:**
 
-- Difesa `always` (commit `84d3d4a34`): **corretta per l'attacco che dichiara
-  di chiudere**, ma **incompleta**: non è armata su `bash`/`bash_unresolved`
-  (dove il confine è `ask`, non `deny`) e il suo test di regressione era
-  **un'asserzione vacua**. Tre vie di aggiramento confermate con esecuzione
-  reale (V8.1, V8.2, V8.3).
-- Gate `todowrite` (commit `d861d3267`): **il blocco funziona** ma il contratto
-  dichiarato dal ticket ("il tool GLI MANCA") **non è quello implementato**:
-  il tool resta in lista e fallisce a runtime. Due buchi secondari (V9.1, V9.2).
-- Derivazione dei fatti: **prende input non ripulito** → iniezione di righe
-  finte nell'output del tool (V9.3).
+- **Stato (d861d3267): NON conforme al ticket.** Lo stato invalido NON blocca
+  sul percorso di default (`refresh` inghiotte `Unreadable` e rigenera
+  `idle`, cancellando la fase dichiarata — B1, riprodotto). Il push non
+  esiste (B12). La "dichiarazione senza prova" entra nei target (B3) e
+  `divergences()` non ha chiamanti. Il contratto "tool che manca" è falso
+  (B11) e il rinforzo nel prompt non esiste.
+- **Gate todowrite: il blocco a runtime funziona** (nessun todo nel DB, anche
+  via batch) **ma** è aggirabile cancellando `state.json` nelle dir
+  riconosciute dal file (B7), non è per-sessione come dichiarato (B9), e
+  sblocca anche su caricamento FALLITO (B2).
+- **Difesa `always` (84d3d4a34): corretta per l'attacco dichiarato** (edit/write
+  `*`), ma non armata su permission con confine `ask` (V8.1 escape bash,
+  riprodotto), il canale seedato la bypassa (V8.2), e il suo test di
+  regressione era vacuo (V8.4).
+
+---
+
+## S1 — stato e gate (task-0, B1–B13)
+
+### B1 — `refresh` SOVRASCRIVE lo stato invalido: versione sconosciuta non blocca, rigenera `idle` in silenzio [ALTA — riprodotto dall'autore]
+
+**Input:** `state.json = {"version":999,"program":"acme","phase":"reporting"}`
+in dir hunting; `bounty_status` senza parametri (default `refresh:true`).
+
+**Output reale (riproduzione indipendente):**
+
+```
+prima: read lancia? SI (versione dello stato 999 non supportata)
+dopo refresh: phase = idle | version = 1
+=> fase 'reporting' dichiarata: CANCELLATA IN SILENZIO
+```
+
+**Perché:** `refresh()` (bounty-state.ts:314-320) cattura QUALUNQUE eccezione
+con `catch { return create(...) }` e riscrive: lo stato invalido non blocca
+nessuno e la fase dichiarata viene sostituita da `idle`, presentata come
+fact. Il ticket dichiarava "versione sconosciuta → Unreadable → blocco, mai
+reinterpretare". Il commento a :307-308 ("restituisce quello derivato senza
+crearlo") è inoltre falso: il codice lo CREA e lo SCRIVE.
+
+**Fix:** nel catch, distinguere `NotFound` (crea) da ogni altro errore
+(`Unreadable` → rilancia). Il BLOCCO dichiarato dal ticket va implementato nel
+chiamante (`bounty_status` deve propagare l'errore, non creare).
+
+### B2 — `markLoaded` PRIMA della lettura: caricamento FALLITO sblocca todowrite [ALTA]
+
+`bounty-status.ts:44`: `(BountyState.markLoaded(ctx.sessionID), BountyState.read(dir))`
+— misurato: `bounty_status({refresh:false})` THROW + `loaded(sid)=true` +
+`todowrite` esegue ("1 todos"). L'agente non ha visto un fatto ed è sbloccato
+per sempre. **Fix:** read/markLoaded in quest'ordine (o markLoaded solo dopo
+successo).
+
+### B3 — La derivazione prende DICHIARAZIONI, non fatti; `divergences()` senza chiamanti [ALTA]
+
+Un `coverage_note` con asset di testo libero (nessuna richiesta HTTP, nessuna
+observation) entra nei target dello stato: `host = "mai-visitato.example.com"`.
+Il canale è lo stesso tipo di dichiarazione-LLM che il ticket voleva escludere
+(il buco nero curl è invece rispettato). E `divergences()` — l'unico
+rilevatore di menzogne previsto dal design — ha **zero chiamanti in
+produzione**: il disallineamento non è implementato.
+
+**Fix:** (a) chiamare `divergences()` in `bounty_status` e mostrarle
+(esporle all'agente è già un controllo); (b) decidere se `coverage_note.asset`
+richiede evidenza collegata (RequestObservation) per contare come target.
+
+### B4 — Stato scritto a mano mostrato come fact (`refresh:false`) senza avvisi [MEDIA-ALTA]
+
+`state.json` manomesso (`findings.total=42`, host inventato) → output
+`Findings: 42 total` + nessun avviso (`output avverte? false`). `refresh:true`
+lo ripulisce, ma nulla lo obbliga. **Fix:** in `refresh:false` eseguire
+comunque `derive()` e marcare le divergenze nell'output.
+
+### B5 — Iniezione righe false via asset con newline; asset vuoto → target "" [MEDIA — riprodotto]
+
+`hostOf` non ripulisce: newline passano nell'output strutturato del tool
+(prompt-injection surface); `asset: ""` diventa `Targets touched: 1` con host
+vuoto. **Fix:** trim + scarta vuoti + tronca/scarta asset con whitespace.
+
+### B6 — Falso positivo: progetto normale con `bugbounty/programs` nel path viene bloccato E riceve un `state.json` parassita [MEDIA]
+
+`isHuntingDir` scansiona i segmenti del path: una repo qualsiasi con una
+sottodirectory `bugbounty/programs/notes` viene bloccata su todowrite e, se
+chiama `bounty_status`, le si scrive `state.json` dentro. Caso simile: un
+`state.json` estraneo (es. Terraform) in una dir qualsiasi → gate armato E
+file sovrascritto (`contenuto originale preservato? false`).
+
+**Fix:** la classificazione deve richiedere lo schema bounty (versione+
+programma) per il ramo state.json, e il layout ufficiale per il ramo path —
+mai scrivere in una directory non riconosciuta come programma.
+
+### B7 — Il gate si spegne con `rm state.json` (dir riconosciute dal file) [MEDIA]
+
+Dir fuori dal layout con state.json: `todowrite` blocked → `rm state.json` →
+`todowrite` esegue (`isHuntingDir` ora false). Il "cancello smontabile".
+Per le dir nel layout ufficiale il `rm` non basta. **Accettabile?** Da
+decidere: il gate resta serio nel layout ufficiale; il ramo file è il debole.
+**Fix:** armare il gate solo sul layout ufficiale, oppure ricordare la
+classificazione nella sessione (sticky) invece di ricontrollare il file a ogni
+chiamata.
+
+### B8 — Falso negativo: collection dir e programma chiamato `programs` mai hunting [BASSA-MEDIA]
+
+`basename === "programs"` esentato + stringa con slash finale →
+`<base>/bugbounty/programs` e `<base>/bugbounty/programs/programs` non sono
+mai progetti; nemmeno via symlink. **Fix:** discriminare su `state.json`
+valido invece che sul basename.
+
+### B9 — Il flag NON è per-sessione: è per (sessione, directory) [BASSA — design/doc]
+
+`Instance.state` è chiavato per directory: `loaded(S)` in A=true, in B=false.
+I commenti (e i miei test) dichiarano "per-sessione". Non è un bypass, ma
+l'invariante dichiarato è falso e la directory nel percorso HTTP arriva dal
+client (server.ts:233-254). **Fix:** correggere i commenti/test; valutare se
+il gate debba dipendere dalla sessione sola.
+
+### B10 — `.tmp` orfano se il rename fallisce; derive sfasata sullo spelling della directory [BASSA-MEDIA]
+
+(a) rename su path-directory → `EISDIR` e `.tmp` residuo (nessun cleanup).
+(b) `Session.create` salva `directory` verbatim: uno slash finale e l'evidenza
+diventa invisibile (`derive` fa eq ESATTO). **Fix:** cleanup del tmp in
+catch; normalizzare la directory (realpath) alla creazione sessione o in
+`derive`.
+
+### B11 — Contratto: "tool che manca" è falso; rinforzo prompt assente; batch dice "1/1 successful" [MEDIA]
+
+`todowrite` resta nella lista dei 63 tool; il blocco è una stringa di
+`execute` (`batch execution (1/1 successful)` con part
+`title="blocked — load project state first"`, DB vuoto — il blocco regge, ma
+l'etichetta inganna); grep su prompt*/agent/system: nessun rinforzo. **Fix:**
+scelta A5 (lista tool condizionata) oppure rinominare onestamente il
+meccanismo + rinforzo nel prompt + fix dell'etichetta in batch.
+
+### B12 — Il PUSH non esiste: nessun comando crea/aggiorna lo stato [MEDIA]
+
+Unico chiamante di produzione = `bounty-status.ts`; `bb hunt` non esiste;
+`create/setPhase/regenerate` senza chiamanti. Un progetto nuovo resta in
+stallo: `refresh:false` lancia, `refresh:true` inventa `idle` (B1). In più il
+conteggio findings pubblicato include duplicati/scartati
+(`confirmed()` li esclude, derive no) → cifra gonfiata. **Fix:** è il lavoro
+del ticket `hunt-comando-entry-point` (il push arriverà con `bb hunt`);
+intanto correggere il conteggio derive.
+
+### B13 — Userinfo con credenziali diventa "host" [BASSA-MEDIA]
+
+`hostOf("https://user:pass@internal.example.com/x")` →
+`"user:pass@internal.example.com"`: entra in state.json e viene stampato —
+un segreto in un fatto mal etichettato. **Fix:** in `hostOf` scartare lo
+userinfo (`URL` parse, `url.hostname`).
+
+## S2 — difesa `always` (task-1 + riproduzioni autore)
+
+### V8.1 — ESCAPE VIA BASH: un click "sempre" apre la scrittura fuori progetto [GRAVE — riprodotto]
+
+Perimetro attivo (`{bash,*,ask}`, nessun deny — project.ts:418-421);
+`python3 -c "print(1)"` → click "sempre" (pattern `python3 *`, NON filtrato);
+poi `python3 -c "open('.../fuori/escape.txt','w').write('ESCAPE')"`:
+
+```
+STEP1: {"output":"1\n","exit":0}
+STEP2: {"output":"","exit":0}          <- nessun ask
+FILE FUORI: ESCAPE
+```
+
+La difesa filtra solo se il ruleset ha un `deny` sulla permission
+(next.ts:211-212); bash è `ask` per design (il deny bloccherebbe la
+classificazione). Controfattuale pre-`84d3d4a34`: identico — canale non
+coperto, non regressione. **Fix (A1):** vietare `always` di famiglia per
+`bash*` in sessione perimetrata, o estendere la condizione `perimetrato` alle
+regole `ask` del perimetro.
+
+### V8.2 — SEED NON INTERATTIVO: `{edit,*,allow}` in `approved` vince sul deny [GRAVE — riprodotto]
+
+```
+evaluate(edit, /etc/passwd, [deny] + approved[{edit,*,allow}]) = allow
+```
+
+Canale persistito (`PermissionTable` → `approved: stored`) senza controlli.
+Oggi il salvataggio DB è disattivato (next.ts:244-247 TODO) ma la via esiste.
+**Fix (A2):** filtrare/declassare le righe ampie di `approved` al load, come
+fa `reply` per il canale interattivo.
+
+### V8.3 — Confine espresso come `ask`: la difesa non scatta (.env) [MEDIO — riprodotto]
+
+```
+ruleset ha un DENY su read? false
+primo .env: PENDING(ask) → always → secondo .env: RISOLTA (nessun ask)
+```
+
+**Fix (A1, stessa radice di V8.1).**
+
+### V8.4 — Test di regressione VACUO [MEDIO — difetto della verifica]
+
+```
+ask su deny -> nessun throw sincrono | valore ritornato: Promise (REJECTED DeniedError)
+Bun expect(() => asyncFn()).toThrow() -> toThrow NON ha lanciato
+```
+
+Il test del `84d3d4a34` passava anche con ruleset senza deny/vuoto; il
+commento ("lancia in modo sincrono") è falso. **Fix (A3):** assert sull'esito
+settled e sull'EFFETTO (contenuto di `approved`), non sull'eccezione.
+
+### Regge (provato)
+
+- Regressione originale chiusa: dopo "sempre" su scrittura interna,
+  `edit("/etc/passwd")` resta `DENY:DeniedError`.
+- `Wildcard.match("*", p)` filtra `*`, `**`, `?*`, `*?*`, `?`; NON filtra
+  `a*`, `*a`, `a*b`, `""`, `[a]`, `../*`, `/*`, `/etc/*`, `**/*`, `python3 *`.
+- Nessuna regressione sul flusso senza perimetro.
+
+---
+
+## Attacchi respinti (task-0, essenziale)
+
+Stato invalido blocca **via `read()`** (10 varianti — è il percorso
+`refresh` che non blocca, B1); refresh ripulisce uno stato gonfiato a mano
+(pecca per eccesso → riallineato); atomicità regge su EACCES (stato
+byte-identico, zero tmp); 0600 anche su file preesistente; concorrenza
+stesso-processo OK; gate valido dentro batch (DB vuoto); nessuna via laterale
+a `Todo.update` (1 chiamante); scrivere state.json a mano non sblocca (flag
+in memoria); evidenza di altri progetti non inquina (filtro per
+session.directory); `programs-evil` e segmenti intermedi non matchano.
+
+## Non verificato
+
+- E2E via server HTTP con LLM reale (directory dal client: potenziale bypass
+  di B9 non esercitato).
+- Crawler reale: formato effettivo degli asset che scrive (rilevanza di B5/B13).
+- Concorrenza tra processi diversi; Windows; client GUI/TUI con spelling
+  directory diverso.
+- `bb hunt` fuori dal monorepo (dipendenze esterne).
+
+## Azioni derivate (aggiornate)
+
+| # | Azione | Origine | Priorità |
+|---|---|---|---|
+| A1 | Vietare `always` di famiglia per `bash*` perimetrato / estendere `perimetrato` ai confini `ask` | V8.1, V8.3 | ALTA |
+| A2 | Filtrare `approved` seedato/persistito con pattern ampi | V8.2 | ALTA |
+| A3 | Riscrivere il test di regressione `always` (settled + effetto) | V8.4 | ALTA (bari) |
+| A4 | Invertire markLoaded/read in `bounty-status.ts` | B2 | ALTA |
+| A5 | Contratto gate (lista tool vs rifiuto) + rinforzo prompt + etichetta batch | B11 | MEDIA |
+| A6 | Sanitizzare `hostOf` (newline, vuoti, userinfo) | B5, B13 | MEDIA |
+| A7 | `refresh`: distinguere NotFound da Unreadable; propagare il blocco | B1 | ALTA |
+| A8 | Chiamare `divergences()` in `bounty_status` e mostrarle | B3 | MEDIA |
+| A9 | `refresh:false` valida comunque contro derive, marca divergenze | B4 | MEDIA |
+| A10 | Classificazione hunting su schema, non solo path/basename; mai scrivere fuori dai programmi riconosciuti | B6, B7, B8 | MEDIA |
+| A11 | Cleanup `.tmp` in catch; normalizzare directory in derive/session | B10 | BASSA |
+| A12 | Correggere commenti/test "per-sessione" (in realtà per sessione+directory) | B9 | BASSA |
+| A13 | Correggere conteggio findings in derive (duplicati/scartati) | B12 | MEDIA (con bb hunt) |
+
 
 ---
 
