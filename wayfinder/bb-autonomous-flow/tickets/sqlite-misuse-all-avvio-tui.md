@@ -76,3 +76,52 @@ causa e' la scrittura concorrente sullo stesso `cyberstrike.db`.
 
 Verifica: prima di ogni avvio, `free -m` e `pgrep` per processi TUI residui;
 dopo, `timeout` sempre, e controllo che 0 processi restino.
+
+## Indagine 2026-09-26 — due ipotesi esaurite, causa ancora aperta
+
+### Ipotesi 1: scrittura concorrente. ESCLUSA.
+
+Il sospetto iniziale era una race fra processi sullo stesso `cyberstrike.db`
+(il TUI gira in `new Worker()`, quindi main e worker sono processi distinti che
+aprono lo stesso file in WAL). Ho scritto `infra/bounty-sandbox/sqlite-race.py`
+che lancia 3 writer concorrenti x 4 round, ciascuno con lo stesso pattern di
+`updateMessage` (upsert su id):
+
+```
+=== 3 writer concorrenti x 4 round ===
+  round 1/4 completato ... round 4/4 completato
+  codici di errore raccolti: nessuno
+  NON riprodotto con scritture concorrenti pulite
+```
+
+`busy_timeout = 5000` (db.ts:152) copre la concorrenza: l'attesa e' gia' dentro.
+**Ipotesi scartata.**
+
+### Ipotesi 2: statement o handle usato dopo la chiusura. NON RIPRODOTTA.
+
+- `Statement` riusato dopo `finalize()` → dà `Statement has finalized`, **non**
+  `SQLITE_MISUSE`. Errore diverso.
+- Un `Database` chiuso mentre un altro handle fa `prepare` → nessun errore.
+- 5000 upsert di fila → nessun errore.
+
+Cercato in tutto il repo: `close()` non compare mai in `storage/` ne' in
+`session/index.ts`, quindi l'handle non viene chiuso esplicitamente da
+CyberStrike.
+
+### Cosa resta
+
+`SQLITE_MISUSE` da `prepare()` con `byteOffset: -1` significa che la
+preparazione dello statement fallisce, prima di scrivere. Non e' un constraint e
+non e' concorrenza. La lettura piu' probabile e' **`data` non serializzabile o
+shape inattesa** passato a drizzle, oppure una migrazione/reconcile in corso
+mentre un altro processo scrive — ma ho guardato `reconcile(sqlite)` (db.ts:185)
+e gira solo dentro il `lazy()` del `Client`, quindi solo alla prima apertura del
+processo.
+
+**Non isolato.** Non chiudo il ticket: dichiararlo risolto sarebbe la stessa
+specie di conclusione anticipata che ho già ritirato due volte su #14.
+
+La via che resta e che non ho percorso: misurare sul TUI vero dentro il
+container, dove l'errore si è manifestato, invece che su harness sintetici che
+non ci arrivano. Va fatto dentro il container, con l'utente che apre la
+sessione, perche' richiede l'intervento umano.
