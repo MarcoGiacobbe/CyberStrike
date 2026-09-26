@@ -125,3 +125,71 @@ La via che resta e che non ho percorso: misurare sul TUI vero dentro il
 container, dove l'errore si è manifestato, invece che su harness sintetici che
 non ci arrivano. Va fatto dentro il container, con l'utente che apre la
 sessione, perche' richiede l'intervento umano.
+
+## Verifica avversariale deleg_c71b5521 — NON ISOLATO
+
+18 API call, 302s, 0 tentativi TUI (il container `cyberstrike-bounty` non
+esiste in questo ambiente e non ho autorizzato a crearlo). Esito: **causa non
+isolata**. Nessun file di sorgente modificato, worktree pulito.
+
+### L'errore di ragionamento che mi e' stato contestato, e che accetto
+
+Avevo scritto che `busy_timeout=5000` e WAL escludono la concorrenza. **Non e'
+ vero cosi'.** Il mio test dei writer misura scritture concorrenti *pulite*;
+l'errore dell'utente e' in `prepare()`, cioe' *prima* dell'esecuzione dello
+statement, e `busy_timeout` governa il locking durante l'accesso. Ho
+generalizzato un test che copre un caso specifico in una confutazione di una
+ipotesi piu' ampia. Era il mio errore piu' grave del lotto, perche' me l'avevo
+dichiarato risolto.
+
+### Ipotesi messe alla prova, con esito
+
+| ipotesi | esito | prova |
+|---|---|---|
+| `data` non serializzabile | resa meno probabile | 10.000 upsert JSON, 10000 ok; ciclico dà `TypeError: JSON.stringify`, **non** `SQLITE_MISUSE` |
+| riuso prepared statement drizzle | resa meno probabile | `insert.js:148-149` chiama `_prepare()` per ogni `.run()`; 10.000 esecuzioni alternate ok |
+| `Client()` chiamato due volte in `db.ts:203` | **non e' un difetto** | `lazy.ts:1-15` memoizza: entrambe le chiamate restituiscono lo stesso client |
+| statement/handle dopo close | non esclusa | l'errore differisce, ma senza riproduzione non basta |
+
+Nota: `Client()` due volte era una domanda infelice ma giusta — la risposta e'
+no, e va scritta per non rifarla.
+
+### La pista che ho escluso io, con verifica (volume/filesystem)
+
+Avevo ipotizzato che il DB stesse su un volume Docker con filesystem non
+adatto al WAL. **Verificata e falsa.** I volumi sono `ext2/ext3`, non ext4, ma
+il test sul filesystem REALE passa:
+
+```
+journal_mode = wal
+200 upsert su cyberstrike-share -> 0 errori
+rows = 200
+```
+
+Il filesystem non regge, ma regge: non e' la causa.
+
+### Cosa resta
+
+Nessuna ipotesi in mano con prove a favore. Quello che resta, in ordine di
+probabilita' e NON verificato:
+
+1. **Il TUI reale dentro il container**, dove l'errore si e' manifestato: main e
+   `Worker` (thread.ts:112) come processi distinti che toccano lo stesso DB
+   durante `migrate()`/`reconcile()`. Il subagent non l'ha potuto provare perche'
+   il container non esisteva. Questa e' la via che resta ed e' la piu'
+   promettente, perche' e' l'unica che replica le condizioni reali.
+2. Il ramo `abort` di `processor.ts:366-370`, che chiama `updateMessage` mentre
+   un altro `updateMessage` e' in corso: possibile come sequenza applicativa,
+   nessuna evidenza diretta.
+
+### Stato del ticket
+
+**APERTO, non isolato.** Non e' un difetto introdotto da me: la base e' il
+tempo di sessione sul DB e l'errore e' intermittente e non blocca l'uso. Ma non
+e' nemmeno un artefatto dell'ambiente, perche' non l'ho mai riprodotto in
+ambienti puliti.
+
+**Nota operativa:** l'errore ha colpito una volta sola, all'avvio, e l'utente ha
+detto "ora va". Se compare di nuovo, il passo utile e' catturarlo **mentre
+accade** (stack completo + timestamp) invece di tentare di riprodurlo a
+posteriori: da solo non basta a chiudere il ticket.
