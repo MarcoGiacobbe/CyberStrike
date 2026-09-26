@@ -10,12 +10,22 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Tool di hunting. sqlmap/nuclei/httpx/ffuf/nmap: i raw socket di nmap sono
 # l'unico punto che richiede una capability (vedi ticket, fase 1.3).
+# (curl si installa QUI, non prima: il primo tentativo di mettere Bun prima di
+# apt falliva con `curl: not found`.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git jq python3 python3-pip \
       nmap netcat-openbsd openssh-client dnsutils iproute2 \
       ripgrep less procps file unzip \
       chromium chromium-driver chromium-sandbox \
     && rm -rf /var/lib/apt/lists/*
+
+# Bun: CyberStrike e' un'app Bun, non Node. Senza questo il TUI non parte
+# (`timeout: failed to run command 'bun'`). Fissato a 1.3.9 come packageManager
+# nel repo: 1.4.2 produce un binario che non rende NULLA (processo vivo, 0 byte).
+RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.9" \
+    && install -m 0755 /root/.bun/bin/bun /usr/local/bin/bun \
+    && rm -rf /root/.bun \
+    && bun --version
 
 # Chromium ha bisogno di /dev/shm piu' grande della meta' RAM: senza, il browser
 # headless crasha con "Failed to move to new namespace" su /dev/shm piccolo.
