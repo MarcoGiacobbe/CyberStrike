@@ -209,3 +209,28 @@ riprovați **uno per uno** sulla versione attuale, e due erano reali:
 
 Correzione: `shell -c 'cmd'` ora esegue il comando (`SHELL-C OK`); `shell` senza
 `-c` resta la shell interattiva con `-it`.
+
+## Secondo giro di verifica indipendente (subagent avversariale) — sul launcher giusto
+
+Tutti i criteri passano: percorsi (`root()=/work`, `programsDir=/work/bugbounty/programs`,
+programmi presenti), cinque modi d'invocazione, persistenza (i marker in
+`~/.local/share/cyberstrike` e nel mount sopravvivono al riavvio, `~/.config/cyberstrike`
+è scrivibile e persistente, `~/.config` è `EACCES` come previsto), provider
+(`VERIFICA OK`), e area pulita (in `/work/bugbounty/programs/` c'è solo `bcny-test`).
+
+Un difetto segnalato, e la lettura che ne ho fatto:
+
+> `run-sandbox.sh echociao` → l'LLM risponde "ciao! How can I assist you..."
+
+Non è un bug: **è il comportamento voluto**. Un argomento non riconosciuto è
+un messaggio per l'agente, non un comando di sistema — `run-sandbox.sh "cerca
+subdomini di X"` deve parlare con CyberStrike. I due verificatori precedenti
+avevano letto cose opposte perché avevano provato parole diverse (`echociao`
+→ LLM, `test echociao` → `command not found`); la regola non era scritta da
+nessuna parte, quindi ora è dichiarata in testata e nel codice.
+
+Il caso `diagnose()` che il subagent ha riportato vale la pena annotarlo:
+`{"projectDir":"/work/bugbounty/programs/bcny-test","risk":"no-repo"}` — cioè il
+gate riconosce il progetto e la directory di lavoro, ma non un repository git.
+È il comportamento atteso per una directory di programma non-Git: `project_id`
+e `worktree` valgono `"global"`.

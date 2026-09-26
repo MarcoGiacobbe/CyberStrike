@@ -97,6 +97,9 @@ elif [ "${1:-}" = "test" ] || [ "${1:-}" = "bash" ]; then
   if [ "${1:-}" = "-c" ]; then shift; fi
   CS_CMD="$*"
 elif [ -n "${1:-}" ]; then
+  # Non e' un difetto: qualunque argomento non riconosciuto e' un MESSAGGIO per
+  # CyberStrike, non un comando shell. `run-sandbox.sh "cerca subdomini di X"`
+  # deve parlare con l'agente. I comandi di sistema vanno con `test` / `shell -c`.
   MODE="cyberstrike"
   CS_CMD="$*"
 fi
