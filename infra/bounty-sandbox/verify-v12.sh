@@ -14,6 +14,9 @@ BUN="$HOME/.local/share/bun-1.3.9/bin/bun"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${1:-/tmp/v12}"
 MSG="${2:-rispondi esattamente: V12OK}"
+# provider/model espliciti: il default (qwen-local-cyber) non e' in config ne'
+# in auth.json, quindi non ha credenziali e non risponde mai.
+MODEL="${3:-omni/auto/best-coding}"
 
 echo "=== memoria PRIMA ==="
 free -m | awk 'NR==2{print "  usata:", $3, "MB  disp:", $7, "MB"}'
@@ -26,10 +29,11 @@ fi
 
 echo "=== V12: sessione reale, provider, un tool ==="
 echo "  messaggio: $MSG"
+echo "  provider:  $MODEL"
 
 cd "$REPO/packages/cyberstrike"
 # timeout SEMPRE: senza, il TUI resta vivo ~800 MB per sempre.
-timeout 150 "$BUN" run --cwd . src/index.ts run "$MSG" 2>&1 | tee "$OUT.log"
+timeout 150 "$BUN" run --cwd . src/index.ts run -m "$MODEL" "$MSG" 2>&1 | tee "$OUT.log"
 
 echo
 echo "=== residui (deve essere 0) ==="
