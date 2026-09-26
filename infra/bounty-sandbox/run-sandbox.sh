@@ -83,7 +83,14 @@ if [ "${1:-}" = "run" ]; then
   MODE="cyberstrike"
   CS_CMD="$*"
 elif [ "${1:-}" = "shell" ]; then
-  shift; MODE="shell"
+  shift
+  if [ "${1:-}" = "-c" ]; then
+    shift
+    MODE="test"
+    CS_CMD="$*"
+  else
+    MODE="shell"
+  fi
 elif [ "${1:-}" = "test" ] || [ "${1:-}" = "bash" ]; then
   shift
   MODE="test"

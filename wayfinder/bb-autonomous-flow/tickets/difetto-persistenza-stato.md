@@ -191,3 +191,21 @@ stesso come volume e risolvere anche quello, ma significherebbe un quarto
 volume e un pezzo di logica in più per una directory in cui nessuno scrive.
 
 Verifica indipendente: in corso.
+
+
+## Verifica indipendente — primo giro (subagent avversariale)
+
+Il subagent ha verificato una versione **superata** di `run-sandbox.sh` (quella
+in cui avevo rifatto l'ambiente, poi respinta dall'utente). Il suo esito non conta
+come verifica di questa. Comunque i suoi quattro difetti extra sono stati
+riprovați **uno per uno** sulla versione attuale, e due erano reali:
+
+| Difetto segnalato | Sulla versione attuale |
+|---|---|
+| `~/.config` root-owned, `EACCES` | **vero ma innocuo**: `drwxr-xr-x root root` su `~/.config`, ma `~/.config/cyberstrike` è `hunter:hunter` e **dentro il volume si scrive** — misurato. È l'unica dir che CyberStrike usa sotto XDG_CONFIG |
+| `shift` nel fallback `*)` scarta il primo argomento | **non riprodotto**: `run-sandbox.sh echo hello` → `hello`. Il difetto era della versione rifatta |
+| `shell -c` rotto (`the input device is not a TTY`) | **vero** — documentato in testata, non funzionante: la clausola ignorava `-c` e imponeva `-it`. **Corretto**: con `-c` diventa non-TTY |
+| `test` senza `-c` esegue a vuoto | **non riprodotto**: `run-sandbox.sh test ls` esegue `ls` e stampa il contenuto |
+
+Correzione: `shell -c 'cmd'` ora esegue il comando (`SHELL-C OK`); `shell` senza
+`-c` resta la shell interattiva con `-it`.
