@@ -620,8 +620,31 @@ export const BBCommand = cmd({
             }),
         async (args) => {
           const program = args.program
+
+          // Il nome del programma finisce dentro un path (`directory()` fa
+          // path.join). Senza questo controllo un nome come `../../../tmp`
+          // portava la directory — e quindi il PERIMETRO — fuori da programs/,
+          // con `allow edit` su una directory arbitraria. Misurato il
+          // 2026-09-26: `bb hunt "../../../tmp"` dava perimetro su /tmp.
+          // Il vincolo e' che il path RISOLTO resti dentro programs/: e' piu'
+          // forte di un elenco di caratteri vietati (copre `..`, separatori,
+          // nomi vuoti, e quello che non ho ancora pensato).
           const base = BountyState.root()
+          const programsRoot = BountyState.programsDir()
           const directory = BountyState.directory(base, program)
+          const rel = path.relative(programsRoot, directory)
+          if (
+            rel === "" ||
+            rel === ".." ||
+            rel.startsWith(".." + path.sep) ||
+            path.isAbsolute(rel)
+          ) {
+            UI.error(
+              `Nome di programma non valido: "${program}". ` +
+                `Un progetto deve stare dentro ${programsRoot}.`,
+            )
+            process.exit(1)
+          }
 
           // 1. Program config: può non esistere (programma mai sincronizzato) o
           //    il programma può essere stato rimosso con `bb remove`. Entrambi i
@@ -657,11 +680,13 @@ export const BBCommand = cmd({
           // 2. Directory di progetto: si crea se manca. Il bootstrap si ferma
           //    qui — non lancia il primo crawl, lo lancia l'agente quando il
           //    messaggio glielo chiede.
-          // La directory si crea SOLO se il programma esiste davvero: crearla
-          // prima faceva si' che un refuso lasciasse una directory vuota, e il
-          // lancio successivo la scambiasse per un progetto abbandonato.
-          if (!unsynced) fs.mkdirSync(path.join(directory, "program"), { recursive: true })
+          // La directory si crea SOLO se il programma esiste davvero (crearla
+          // prima faceva si' che un refuso lasciasse una directory vuota, che il
+          // lancio successivo scambiava per un progetto abbandonato) e SOLO se
+          // non e' un dry-run: `--dry-run` non tocca il filesystem, se no non
+          // e' un dry-run. Misurato il 2026-09-26.
           const existed = fs.existsSync(directory)
+          if (!unsynced && !args.dryRun) fs.mkdirSync(path.join(directory, "program"), { recursive: true })
 
           // 3. Stato: assente in un progetto nuovo, e non è un errore.
           let state: BountyState.Info | undefined
@@ -675,6 +700,18 @@ export const BBCommand = cmd({
           //    `diagnose()` un path con metacaratteri o una directory fuori dal
           //    progetto passerebbero, e `buildProjectRuleset` da solo non basta.
           const diagnosis = await ProjectPerimeter.diagnose(directory)
+          // `isSafe` e' una lista POSITIVA (project.ts:417): un rischio non
+          // previsto e' rifiutato per default invece di passare in silenzio.
+          // Ignorarlo lascerebbe un perimetro costruito su un path in cui
+          // l'autore non si fida. Misurato: senza questo controllo un path
+          // traversal arrivava fino a costruire 9 regole su /tmp.
+          if (!ProjectPerimeter.isSafe(diagnosis)) {
+            UI.error(
+              `Non posso costruire un perimetro affidabile per ${directory}: ${diagnosis.risk}.`,
+            )
+            if (diagnosis.warning) UI.error(diagnosis.warning)
+            process.exit(1)
+          }
           const rules = ProjectPerimeter.buildProjectRuleset(directory, diagnosis.worktree)
 
           const message = HuntContext.message({
@@ -684,6 +721,7 @@ export const BBCommand = cmd({
             state,
             unsynced,
             orphan,
+            existed,
           })
 
           if (args.dryRun) {
@@ -710,21 +748,39 @@ export const BBCommand = cmd({
           //    sessione da solo solo quando `sessionID` è assente
           //    (`tui/component/prompt/index.tsx:543`): pre-creandola e passing
           //    l'id, il TUI la riusa e non ne crea una vuota senza regole.
-          const session = await Session.createNext({
-            title: HuntContext.TITLE + " · " + program,
-            directory,
-            permission: rules,
-          })
+          // `bootstrap` serve perche' `createNext` legge `Instance.project`
+          // (`session/index.ts:278`) e senza il context solleva
+          // "No context found for instance" — crash misurato il 2026-09-26.
+          const session = await bootstrap(directory, () =>
+            Session.createNext({
+              title: HuntContext.TITLE + " · " + program,
+              directory,
+              permission: rules,
+            }),
+          )
 
           // 6. Il TUI, quello di sempre: nessun canale nascosto, tutto passa per
           //    argomenti e per la sessione persistita.
           // Il TUI e' il comando DEFAULT (`command: "$0 [project]"`, tui/thread.ts:45), non un
           // sottocomando "thread": passargli "thread" avrebbe fatto stampare l'help.
           const tuiArgs = ["--session", session.id, "--prompt", message, "--agent", args.agent]
-          const child = spawn(process.argv[0]!, [process.argv[1]!, ...tuiArgs], {
-            stdio: "inherit",
-            cwd: directory,
-          })
+          // La root del package cyberstrike: da qui parte il TUI. Derivata da
+          // questo file, non da cwd — l'utente puo' lanciare `bb hunt` da
+          // qualsiasi directory e il TUI deve partire lo stesso.
+          const pkgDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../..")
+          // `--conditions=browser` e' l'invocazione che usa anche lo script
+          // `dev` del package: senza, il TUI (JSX) non risolve
+          // `react/jsx-dev-runtime` e muore all'avvio. Misurato il 2026-09-26.
+          // La forma e' quella dello script `dev` (package.json):
+          //   bun run --conditions=browser ./src/index.ts
+          // `run` + path RELATIVO, non il path assolto di argv: e' la
+          // differenza fra un TUI che parte e "Cannot find module
+          // react/jsx-dev-runtime" (misurato il 2026-09-26).
+          const child = spawn(
+            process.argv[0]!,
+            ["run", "--conditions=browser", "./src/index.ts", ...tuiArgs],
+            { stdio: "inherit", cwd: pkgDir },
+          )
           child.on("close", (code: number | null) => {
             process.exit(code ?? 1)
           })

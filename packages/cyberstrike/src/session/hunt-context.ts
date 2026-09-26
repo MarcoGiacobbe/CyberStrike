@@ -33,6 +33,8 @@ export namespace HuntContext {
     state?: BountyState.Info
     /** true se `program.json` non esiste ancora: il programma non e' sincronizzato */
     unsynced?: boolean
+    /** fatto, non interpretazione: la directory di progetto esiste gia' su disco */
+    existed?: boolean
     /** true se il programma e' stato rimosso con `bb remove` ma la directory c'e' */
     orphan?: boolean
   }): string {
@@ -42,25 +44,28 @@ export namespace HuntContext {
     out.push(`# Bug bounty hunting — ${input.program}`)
     out.push("")
     out.push(
-      `Directory di lavoro: \`${input.directory}\`${input.unsynced ? " (non ancora creata)" : ""}`,
+      `Directory di lavoro: \`${input.directory}\`${
+        input.existed ? "" : " (non ancora creata)"
+      }`,
     )
     out.push(
       "Sei dentro il perimetro di questo progetto: puoi leggere ovunque, scrivere solo qui dentro.",
     )
     out.push("")
 
-    if (input.unsynced) {
-      out.push(
-        `> **Programma non sincronizzato.** Non c'e' un \`program.json\`: lo scope e le regole qui sotto non ci sono. ` +
-          `Prima di toccare un target, l'utente deve lanciare \`bb sync ${input.program}\`.`,
-      )
-      out.push("")
-    }
-
-    if (input.orphan) {
+    // I due avvisi sono mutuamente esclusivi: "rimosso" È il caso peggiore di
+    // "non sincronizzato" (config assente + directory presente). Stamparli
+    // insieme diceva due cose contraddittorie. Misurato il 2026-09-26.
+    if (input.unsynced && input.orphan) {
       out.push(
         "> **Attenzione: programma rimosso.** La directory di questo progetto esiste, ma il programma non e' piu' " +
           "in elenco (è stato rimosso con `bb remove`). Il lavoro precedente resta, ma nessun target e' piu' in scope.",
+      )
+      out.push("")
+    } else if (input.unsynced) {
+      out.push(
+        `> **Programma non sincronizzato.** Non c'e' un \`program.json\`: lo scope e le regole qui sotto non ci sono. ` +
+          `Prima di toccare un target, l'utente deve lanciare \`bb sync ${input.program}\`.`,
       )
       out.push("")
     }
