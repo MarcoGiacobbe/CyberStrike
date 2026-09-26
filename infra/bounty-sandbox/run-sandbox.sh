@@ -122,7 +122,7 @@ docker run "${TTY_ARGS[@]}" --rm --name "$NAME" \
   --cap-drop=ALL \
   --security-opt=no-new-privileges \
   --pids-limit=1024 \
-  --memory=3g \
+  --memory=2g \
   --shm-size=1g \
   --network bridge \
   -v "$REPO":/app:rw \
