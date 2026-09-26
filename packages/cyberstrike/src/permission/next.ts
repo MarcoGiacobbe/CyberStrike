@@ -9,6 +9,7 @@ import { fn } from "@/util/fn"
 import { Log } from "@/util/log"
 import { Wildcard } from "@/util/wildcard"
 import os from "os"
+import path from "path"
 import z from "zod"
 
 export namespace PermissionNext {
@@ -158,8 +159,12 @@ export namespace PermissionNext {
    *
    * Il filtro si applica SOLO alle permission di `FILTERABLE`: fuori da quelle
    * aree il ruleset resta una preferenza dell'utente e "l'ultima regola vince".
+   *
+   * `bound` e' il path assoluto in valutazione: serve a `boundaryDenies` per
+   * confrontare la copertura del deny con il path che la concessione aprirebbe.
+   * Una regola senza path (permission a testo di comando) lo riceve come "".
    */
-  function voidsBoundary(rule: Rule, merged: Ruleset): boolean {
+  function voidsBoundary(rule: Rule, merged: Ruleset, bound: string): boolean {
     if (rule.action !== "allow") return false
 
     // I casi valgono SOLO in una sessione perimetrata.
@@ -172,24 +177,43 @@ export namespace PermissionNext {
 
     if (isCommandPermission(rule.permission) && hasWildcard(rule.pattern)) return true
 
-    if (boundaryDenies(rule.permission, merged)) return true
+    if (boundaryDenies(rule.permission, merged, bound)) return true
 
     return false
   }
 
   /**
-   * Esiste un `deny` DEL CONFINE che copre QUESTA area? Il confronto e' per area
-   * (`Wildcard.match`), non per uguaglianza: `{edit*, *, allow}` non trovava il
-   * deny su `edit` perche' il confronto era `r.permission === rule.permission`,
-   * e lo scavalcava.
+   * Il confine nega un PATH, non un'AREA. Una `deny` del confine copre solo i
+   * path che il suo pattern tocca: se il confine consente esplicitamente
+   * `/tmp` per gli strumenti di scansione, un `deny` su `edit` con pattern `/etc/*`
+   * non deve cancellare le concessioni su `/tmp`.
    *
-   * Solo i deny del confine contano: un `deny` di config su un'area senza
-   * confine non deve trasformare le concessioni successive in regole morte.
+   * Percio' `deny` e' confrontata per AREA *e* per COPERTURA DEL PATH: una
+   * concessione viene filtrata solo se il confine nega davvero il path che
+   * quella concessione aprirebbe. `bound` e' il path assoluto in valutazione,
+   * non il pattern della regola: i due hanno forme diverse (relativa per
+   * `edit`, assoluta per `external_directory`) e vanno normalizzati allo stesso
+   * modo prima di confrontarli.
    */
-  function boundaryDenies(permission: string, merged: Ruleset): boolean {
+  function boundaryDenies(permission: string, merged: Ruleset, bound: string): boolean {
     return merged.some(
-      (r) => r.boundary === true && r.action === "deny" && sameArea(permission, r.permission),
+      (r) => r.boundary === true && r.action === "deny" && sameArea(permission, r.permission) && covers(r, bound),
     )
+  }
+
+  /**
+   * Il pattern del confine copre questo path?
+   *
+   * Il deny del confine copre TUTTO quello che puo' coprire se ha un jolly
+   * (`*`, che e' il caso di `buildProjectRuleset`). Senza jolly, il confronto e'
+   * letterale sul pattern e sul path **nello stesso spazio**: un deny relativo
+   * (`bugbounty/*`, relativo al worktree) e' confrontato con il relativo della
+   * regola, non con il suo path assoluto — altrimenti non coprirebbe mai nulla,
+   * che e' la metà del difetto che questo fix chiude.
+   */
+  function covers(rule: Rule, bound: string): boolean {
+    if (hasWildcard(rule.pattern)) return true
+    return Wildcard.match(bound, rule.pattern)
   }
 
   /** Un pattern con jolly: seleziona una FAMIGLIA di valori, non un valore. */
@@ -348,7 +372,11 @@ export namespace PermissionNext {
         // l'utente approva solo questa volta — e la decisione e' esplicita
         // qui, non un filtro silenzioso a valle.
         const ampi = existing.info.always.filter((pattern) =>
-          voidsBoundary({ permission: existing.info.permission, pattern, action: "allow" }, existing.ruleset),
+          voidsBoundary(
+            { permission: existing.info.permission, pattern, action: "allow" },
+            existing.ruleset,
+            path.isAbsolute(pattern) ? pattern : path.resolve(Instance.worktree, pattern),
+          ),
         )
         for (const pattern of ampi) {
           log.info("always limited by perimeter", { permission: existing.info.permission, pattern })
@@ -397,7 +425,15 @@ export namespace PermissionNext {
     // visibili insieme, quindi vale per ogni canale (click interattivo, lista
     // salvata su DB, regola di config). Filtrare solo in `reply` lasciava
     // aperto il canale persistito.
-    const effective = merged.filter((rule) => !voidsBoundary(rule, merged))
+    // Il deny del confine va confrontato con il PATH che la regola aprirebbe.
+    // Il pattern in valutazione e' relativo per `edit` (i tool mandano
+    // `path.relative(worktree)`) e assoluto per `external_directory`: nei due
+    // casi i confronti avvengono nello spazio giusto, e non serve normalizzare.
+    // La normalizzazione non legge `Instance`: `evaluate` resta pura, e
+    // introdurre qui una lettura dello stato globale cambierebbe il suo
+    // risultato in una funzione che dipende da dove e' stata chiamata.
+    const assoluto = pattern
+    const effective = merged.filter((rule) => !voidsBoundary(rule, merged, assoluto))
     log.debug("evaluate", { permission, pattern, rules: effective.length, filtered: merged.length - effective.length })
     const match = effective.findLast(
       (rule) => Wildcard.match(permission, rule.permission) && Wildcard.match(pattern, rule.pattern),
