@@ -1,70 +1,66 @@
 #!/bin/bash
-# Pubblica wayfinder/bb-autonomous-flow/MAP.md come corpo dell'issue #2.
+# Allinea l'issue #2 alla mappa.
 #
-# Perché questo script esiste: la MAP esisteva in DUE copie — il file locale e
-# il corpo dell'issue GitHub — e le due divergevano. Io (l'autore) le tenevo
-# allineate a mano, che è esattamente il modo in cui divergono: la copia
-# GitHub era una riscrittura condensata, più corta, con sezioni che il file non
-# aveva e senza quelle che aveva.
+# STORIA DEL DIFETTO (2026-09-26, da non ripetere): la MAP esisteva in due copie
+# indipendenti — il file nel repo e il corpo dell'issue #2 — tenute allineate a
+# mano. Divergono ogni volta che una delle due viene toccata. Sono arrivate a
+# essere due mappe diverse: 175 righe nel file contro 133 riscritte a mano
+# sull'issue, con sezioni presenti in una e assenti nell'altra.
 #
-# La regola adesso è meccanica: **una sola sorgente di verità, il file**. L'issue
-# non è una copia redatta a mano, è il file. Non esiste più un secondo testo da
-# tenere allineato.
+# COME SI RISOLVE, e perché non con una terza sincronizzazione: non si tiene
+# allineata la MAP, non la si duplica proprio. L'issue contiene un PUNTATORE al
+# file più un indice delle sezioni. Il testo della mappa vive in un posto solo,
+# dentro il repository, che è già versionato e già nel branch.
+#
+# Conseguenza voluta: modificare la MAP non richiede più di scrivere il file e
+# fare un commit. Niente passo di sincronizzazione, quindi niente che si possa
+# dimenticare — la divergenza che questo script impediva ora non è possibile
+# perché il testo non è duplicato da nessuna parte.
+#
+# Uso:
+#   ./sync-map-issue.sh          -> pubblica MAP-ISSUE.md come corpo dell'issue #2
+#   ./sync-map-issue.sh check    -> mostra le dimensioni senza toccare nulla
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
+BODY="$REPO/wayfinder/bb-autonomous-flow/MAP-ISSUE.md"
 MAP="$REPO/wayfinder/bb-autonomous-flow/MAP.md"
 ISSUE="${CYBERSTRIKE_MAP_ISSUE:-2}"
 
 cd "$REPO"
 
-if [ ! -f "$MAP" ]; then
-  echo "ERR: MAP non trovata in $MAP" >&2
+[ -f "$BODY" ] || { echo "ERR: manca $BODY" >&2; exit 1; }
+[ -f "$MAP" ]  || { echo "ERR: manca $MAP" >&2; exit 1; }
+
+# Il puntatore dentro il corpo deve puntare al branch giusto: su un branch morto
+# il link apre una 404 e l'issue torna a essere un testo senza fonte.
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if ! grep -q "blob/$BRANCH/wayfinder/bb-autonomous-flow/MAP.md" "$BODY"; then
+  echo "ERR: il link in MAP-ISSUE.md non punta al branch corrente ($BRANCH)" >&2
+  echo "     correggilo, altrimenti l'issue rimanda a una 404" >&2
   exit 1
 fi
 
-# La MAP e' dentro il repo, quindi non si puo' scrivere un path assoluto del
-# container (/work/...) nell'issue: le righe che descrivono i path del container
-# si riferiscono a come il container le vede, e va detto, altrimenti chi legge
-# l'issue su GitHub li prende per path del repository.
-MODE="${1:-check}"
-
-case "$MODE" in
+case "${1:-push}" in
   check)
-    echo "=== MAP locale ==="
-    wc -l -c "$MAP"
-    echo
-    echo "=== issue #$ISSUE pubblicata ==="
-    gh issue view "$ISSUE" --json body --jq '.body' | wc -l -c
-    echo
-    echo "per sincronizzare:  $0 push"
+    echo "MAP:           $MAP"
+    echo "  $(wc -l < "$MAP") righe, $(wc -c < "$MAP") byte"
+    echo "corpo issue:   $BODY"
+    echo "  $(wc -l < "$BODY") righe, $(wc -c < "$BODY") byte"
+    echo "issue #$ISSUE: $(gh issue view "$ISSUE" --json body --jq '.body' | wc -l) righe"
     ;;
   push)
-    gh issue edit "$ISSUE" --body-file "$MAP" >/dev/null
-    echo "issue #$ISSUE aggiornata dal file $(basename "$MAP")"
-    # Riverifica RILEGGENDO il corpo remoto e confrontandolo riga per riga con
-    # il file. Il primo tentativo confrontava uno sha256 e falliva sempre:
-    # GitHub aggiunge una newline finale al corpo, quindi gli sha non possono
-    # coincidere per costruzione — la verifica segnalava una divergenza che non
-    # esisteva. Il confronto reale dice: una sola riga di differenza, e una
-    # newline in piu' dal lato remoto.
-    TMP="$(mktemp)"
-    trap 'rm -f "$TMP"' EXIT
+    gh issue edit "$ISSUE" --body-file "$BODY" >/dev/null
+    echo "issue #$ISSUE aggiornata"
+    TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
     gh issue view "$ISSUE" --json body --jq '.body' > "$TMP"
-    # `diff` senza opzioni segnala l'ultima riga vuota mancante come differenza
-    # (`175a176 >`). Con `-B` ignora i cambi di quantita' di righe vuote, che e'
-    # l'unica differenza reale: GitHub aggiunge una newline finale.
-    if diff -q -B "$MAP" "$TMP" >/dev/null; then
-      echo "verificato: il corpo remoto e' identico al file, riga per riga"
+    if diff -q -B "$BODY" "$TMP" >/dev/null; then
+      echo "verificato: il corpo remoto e' identico a MAP-ISSUE.md"
     else
-      echo "DIVERGE (oltre alla newline finale):"
-      diff -B "$MAP" "$TMP" | head -20
-      exit 1
+      echo "DIVERGE:"; diff -B "$BODY" "$TMP" | head -20; exit 1
     fi
     ;;
   *)
-    echo "uso: $0 [check|push]" >&2
-    exit 1
-    ;;
+    echo "uso: $0 [check|push]" >&2; exit 1 ;;
 esac

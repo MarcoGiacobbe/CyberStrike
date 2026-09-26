@@ -1,0 +1,88 @@
+name: map-issue-sync
+
+# Una sola MAP. Il testo vive in `wayfinder/bb-autonomous-flow/MAP.md` dentro il
+# repository, che è già versionato. L'issue #2 non lo duplica: contiene un
+# puntatore al file e un indice delle sezioni.
+#
+# Perché questo workflow esiste: la MAP è stata per settimane in due copie
+# indipendenti — il file e il corpo dell'issue #2 — tenute allineate a mano, fino
+# a diventare due mappe diverse (175 righe contro 133, con sezioni diverse).
+# Tenere allineate due copie a mano non funziona: non è un problema di
+# attenzione, è la struttura del problema. Da qui la regola: il testo non si
+# duplica, e questo controllo impedisce che qualcuno lo reintroduca.
+#
+# L'issue non si modifica a mano. Per cambiarla: si modifica
+# `wayfinder/bb-autonomous-flow/MAP-ISSUE.md` e si esegue
+# `infra/bounty-sandbox/sync-map-issue.sh push`.
+
+on:
+  push:
+    paths:
+      - 'wayfinder/bb-autonomous-flow/MAP-ISSUE.md'
+      - 'infra/bounty-sandbox/sync-map-issue.sh'
+      - '.github/workflows/map-issue-sync.yml'
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: l'issue #2 punta alla MAP e non la duplica
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Il puntatore dell'issue porta al file giusto
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: '2'
+        run: |
+          set -euo pipefail
+          BODY="wayfinder/bb-autonomous-flow/MAP-ISSUE.md"
+
+          if ! gh issue view "$ISSUE" >/dev/null 2>&1; then
+            echo "::warning::issue #$ISSUE non accessibile, controllo saltato"
+            exit 0
+          fi
+
+          gh issue view "$ISSUE" --json body --jq '.body' > /tmp/issue-body.md
+
+          # `-B`: GitHub aggiunge una newline finale al corpo, senza questa
+          # opzione il diff segnalerebbe sempre un'ultima riga vuota.
+          if diff -q -B "$BODY" /tmp/issue-body.md >/dev/null; then
+            echo "ok: il corpo dell'issue e' identico a $BODY"
+          else
+            echo "::error::l'issue #$ISSUE DIVERGE da $BODY"
+            echo "Correggi con: infra/bounty-sandbox/sync-map-issue.sh push"
+            diff -B "$BODY" /tmp/issue-body.md | head -40 || true
+            exit 1
+          fi
+
+      - name: Il link nel corpo punta a un file che esiste, su un branch che esiste
+        run: |
+          set -euo pipefail
+          BODY="wayfinder/bb-autonomous-flow/MAP-ISSUE.md"
+          MAP="wayfinder/bb-autonomous-flow/MAP.md"
+          BRANCH="${GITHUB_REF_NAME}"
+
+          # Il link deve nominare il branch su cui siamo: su un branch morto
+          # apre una 404 e l'issue torna a essere un testo senza fonte.
+          if ! grep -q "blob/$BRANCH/wayfinder/bb-autonomous-flow/MAP.md" "$BODY"; then
+            echo "::error::il link in $BODY non punta al branch corrente ($BRANCH)"
+            exit 1
+          fi
+          [ -f "$MAP" ] || { echo "::error::$MAP non esiste"; exit 1; }
+          echo "ok: il link punta a $MAP su $BRANCH"
+
+      - name: L'issue non duplica la MAP
+        run: |
+          set -euo pipefail
+          BODY="wayfinder/bb-autonomous-flow/MAP-ISSUE.md"
+          MAP="wayfinder/bb-autonomous-flow/MAP.md"
+          # Se il corpo dell'issue ricominciasse a contenere le sezioni della
+          # MAP, saremmo tornati alle due copie. Una sezione intera, e non un
+          # titolo sparso, vale come duplicazione.
+          if grep -qE '^## (Destination|Stato reale|Notes|Decisions so far|Verifica — arretrati)' "$BODY"; then
+            echo "::error::il corpo dell'issue contiene sezioni della MAP: sono di nuovo due copie"
+            echo "Togli dalla MAP-ISSUE.md le sezioni e lascia solo il puntatore e l'indice."
+            exit 1
+          fi
+          echo "ok: l'issue non duplica la MAP (MAP: $(wc -l < "$MAP") righe, issue: $(wc -l < "$BODY") righe)"
