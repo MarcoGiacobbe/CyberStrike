@@ -155,3 +155,58 @@ lo stato caricato, poi esce **senza creare sessione e senza interrogare l'LLM**.
 - il perimetro è effettivo: un tool di scrittura fuori dalla directory del progetto
   viene negato
 - rilanciato a metà non duplica nulla e riprende dalla fase salvata
+
+
+## Implementazione (2026-09-26) — FATTA, in verifica indipendente
+
+Tre file:
+- `packages/cyberstrike/src/session/hunt-context.ts` (**nuovo**) — costruisce il
+  messaggio iniziale e il riepilogo dello stato. Nessun LLM, nessuna rete: solo
+  testo dai dati, cosi' `--dry-run` e' verificabile da solo.
+- `packages/cyberstrike/src/cli/cmd/bb.ts` — il comando `hunt <program>` dopo
+  `crawl`, con `--agent` e `--dry-run`.
+- `infra/bounty-sandbox/run-sandbox.sh` — il mount della root bug bounty.
+
+### Quattro difetti trovati e chiusi durante l'implementazione
+
+1. **Il TUI non e' un sottocomando.** Avevo scritto `["thread", ...]`, ma
+   `TuiThreadCommand` ha `command: "$0 [project]"` (`tui/thread.ts:45`): e' il
+   comando **default**. Con `"thread"` CyberStrike avrebbe stampato l'help e
+   aperto niente.
+2. **I config dei programmi non arrivavano nel container.** Stanno in
+   `~/.cyberstrike/bugbounty/<handle>.json`, ma il volume montava solo
+   `.../bugbounty/programs/`: `bb loadProgram` falliva per **tutti** i programmi
+   e ogni `bb hunt` diceva "non sincronizzato", anche per `bcny` che e'
+   sincronizzato. Risolto montando la root bug bounty (un mount, al posto
+   giusto).
+3. **La creazione della directory avveniva prima di sapere se il programma
+   esiste.** Un refuso creava una directory vuota che il lancio successivo
+   scambiava per un progetto abbandonato. Ora si crea solo se il config esiste.
+4. **`orphan` era la condizione sbagliata.** Avevo scritto
+   `!unsynced && exists(dir)` — cioe' esattamente il caso normale di un hunting in
+   corso, che riceveva l'avviso "programma rimosso". Quella e'
+   `unsynced && exists(dir)`: config assente, directory presente. Misurato su
+   `bcny`, che è sincronizzato e riceveva l'avviso falso.
+
+### Un difetto di lettura che vale la pena
+
+`getBugBountyManager().getProgramConfig()` restituiva il config **in memoria**,
+non quello del programma richiesto: `loadProgram` cerca in `programsDir` (la
+directory interna del manager, che segue `CYBERSTRIKE_HOME` ma non il volume
+montato) e `getProgramConfig()` restituisce "l'ultimo caricato". Con quello,
+`unsynced` non diventava mai vero. Ora il comando **legge il file direttamente**:
+il filesystem non mente. (E `Session.get` restituisce l'`Info` direttamente, non
+`{ info }` — la mia prima lettura era sbagliata.)
+
+### Il punto in cui il perimetro entra in produzione
+
+`Session.createNext` usa `Instance.project` (`session/index.ts:278`) e va in
+errore senza context: serve il wrapper standard `bootstrap(directory, cb)`
+(`cli/bootstrap.ts`, stessa forma di `skill.ts`/`pr.ts`). Con quello, misurato:
+
+```
+permission in DB: 9 regole
+directory in DB:  /work/bugbounty/programs/bcny
+```
+
+Reggressioni: typecheck **11/11**, suite **935 pass / 0 fail** (73 file).

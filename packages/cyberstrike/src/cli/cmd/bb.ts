@@ -29,6 +29,14 @@ import {
 import { syncProgram } from "@cyberstrike-io/hackbrowser/sync"
 import { UI } from "../ui"
 import { spawn } from "node:child_process"
+import path from "node:path"
+import os from "node:os"
+import fs from "node:fs"
+import { BountyState } from "../../session/bounty-state"
+import { HuntContext } from "../../session/hunt-context"
+import { ProjectPerimeter } from "../../permission/project"
+import { Session } from "../../session"
+import { bootstrap } from "../bootstrap"
 
 /**
  * Validate HackerOne API credentials against a read-only endpoint.
@@ -589,6 +597,134 @@ export const BBCommand = cmd({
             stdio: "inherit",
           })
 
+          child.on("close", (code: number | null) => {
+            process.exit(code ?? 1)
+          })
+        },
+      )
+      .command(
+        "hunt <program>",
+        "open a hunting session for a program: project dir + state + perimeter, then the TUI",
+        (y) =>
+          y
+            .positional("program", { type: "string", demandOption: true })
+            .option("agent", {
+              type: "string",
+              default: "web-application",
+              describe: "agent to run the hunt with",
+            })
+            .option("dry-run", {
+              type: "boolean",
+              default: false,
+              describe: "print the initial message, the perimeter and the state, then exit",
+            }),
+        async (args) => {
+          const program = args.program
+          const base = BountyState.root()
+          const directory = BountyState.directory(base, program)
+
+          // 1. Program config: può non esistere (programma mai sincronizzato) o
+          //    il programma può essere stato rimosso con `bb remove`. Entrambi i
+          //    casi avvisano e proseguono: il progetto esiste comunque e non
+          //    bloccare qui impedirebbe di chiudere il lavoro precedente.
+          // Il programma esiste SE c'e' il suo `<handle>.json` nella root bug
+          // bounty. Non uso `getProgramConfig()`: quello restituisce il config
+          // "caricato" in memoria, che puo' essere quello di una chiamata
+          // precedente o nulla — `unsynced` non diventava mai vero e la
+          // directory veniva creata anche per un programma inesistente
+          // (misurato il 2026-09-26). Il filesystem non mente.
+          const configPath = path.join(
+            process.env.CYBERSTRIKE_HOME ?? path.join(os.homedir(), ".cyberstrike"),
+            "bugbounty",
+            `${program}.json`,
+          )
+          let config: any
+          let unsynced = true
+          try {
+            config = JSON.parse(fs.readFileSync(configPath, "utf8"))
+            unsynced = false
+          } catch {
+            config = undefined
+          }
+
+          // `orphan` = la directory di un progetto esiste, ma il programma NON e'
+          // in elenco. Distingue il bootstrap (progetto nuovo, programma mai
+          // sincronizzato) dal lavoro abbandonato (un programma c'era, poi `bb
+          // remove`). Senza questa distinzione un progetto nuovo riceveva anche
+          // l'avviso "rimosso", che e' falso. Misurato il 2026-09-26.
+          const orphan = unsynced && fs.existsSync(directory)
+
+          // 2. Directory di progetto: si crea se manca. Il bootstrap si ferma
+          //    qui — non lancia il primo crawl, lo lancia l'agente quando il
+          //    messaggio glielo chiede.
+          // La directory si crea SOLO se il programma esiste davvero: crearla
+          // prima faceva si' che un refuso lasciasse una directory vuota, e il
+          // lancio successivo la scambiasse per un progetto abbandonato.
+          if (!unsynced) fs.mkdirSync(path.join(directory, "program"), { recursive: true })
+          const existed = fs.existsSync(directory)
+
+          // 3. Stato: assente in un progetto nuovo, e non è un errore.
+          let state: BountyState.Info | undefined
+          try {
+            state = BountyState.read(directory)
+          } catch {
+            state = undefined
+          }
+
+          // 4. Il perimetro. È QUI che il confine diventa effettivo: senza
+          //    `diagnose()` un path con metacaratteri o una directory fuori dal
+          //    progetto passerebbero, e `buildProjectRuleset` da solo non basta.
+          const diagnosis = await ProjectPerimeter.diagnose(directory)
+          const rules = ProjectPerimeter.buildProjectRuleset(directory, diagnosis.worktree)
+
+          const message = HuntContext.message({
+            program,
+            directory,
+            config,
+            state,
+            unsynced,
+            orphan,
+          })
+
+          if (args.dryRun) {
+            // Nessuna sessione, nessun LLM: solo i dati, in chiaro. È il modo
+            // per ispezionare il contesto e per farlo verificare.
+            console.log("=== MESSAGGIO INIZIALE ===")
+            console.log(message)
+            console.log("\n=== PERIMETRO ===")
+            console.log(`directory progetto: ${diagnosis.projectDir}`)
+            console.log(`worktree: ${diagnosis.worktree ?? "(nessuno — non e' un repo git)"}`)
+            console.log(`risk: ${diagnosis.risk}`)
+            if (diagnosis.warning) console.log(`warning: ${diagnosis.warning}`)
+            console.log(`regole: ${rules.length}`)
+            for (const r of rules) {
+              console.log(`  ${r.action}  ${r.permission ?? "-"}  ${r.pattern ?? ""}`.trimEnd())
+            }
+            console.log("\n=== STATO ===")
+            console.log(HuntContext.summary(state))
+            console.log(`\n(--dry-run: nessuna sessione creata, nessun modello interrogato)`)
+            return
+          }
+
+          // 5. La sessione nasce QUI, col perimetro dentro. Il TUI crea una
+          //    sessione da solo solo quando `sessionID` è assente
+          //    (`tui/component/prompt/index.tsx:543`): pre-creandola e passing
+          //    l'id, il TUI la riusa e non ne crea una vuota senza regole.
+          const session = await Session.createNext({
+            title: HuntContext.TITLE + " · " + program,
+            directory,
+            permission: rules,
+          })
+
+          // 6. Il TUI, quello di sempre: nessun canale nascosto, tutto passa per
+          //    argomenti e per la sessione persistita.
+          // Il TUI e' il comando DEFAULT (`command: "$0 [project]"`, tui/thread.ts:45), non un
+          // sottocomando "thread": passargli "thread" avrebbe fatto stampare l'help.
+          const tuiArgs = ["--session", session.id, "--prompt", message, "--agent", args.agent]
+          const child = spawn(process.argv[0]!, [process.argv[1]!, ...tuiArgs], {
+            stdio: "inherit",
+            cwd: directory,
+          })
           child.on("close", (code: number | null) => {
             process.exit(code ?? 1)
           })

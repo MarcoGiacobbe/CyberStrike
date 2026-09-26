@@ -22,7 +22,8 @@ REPO="$(cd "$HERE/../.." && pwd)"
 HOST_SHARE="$HOME/.local/share/cyberstrike"
 VOL_SHARE="cyberstrike-share"
 VOL_CFG="cyberstrike-config"
-PROGRAMS="${CYBERSTRIKE_HOME:-$HOME/.cyberstrike}/bugbounty/programs"
+BB_ROOT="${CYBERSTRIKE_HOME:-$HOME/.cyberstrike}/bugbounty"   # config dei programmi + programs/
+PROGRAMS="$BB_ROOT/programs"
 IMAGE="cyberstrike-bounty:sandbox"
 NAME="${CYBERSTRIKE_SANDBOX_NAME:-cyberstrike-bounty}"
 
@@ -125,7 +126,7 @@ docker run "${TTY_ARGS[@]}" --rm --name "$NAME" \
   --shm-size=1g \
   --network bridge \
   -v "$REPO":/app:rw \
-  -v "$PROGRAMS":/work/bugbounty/programs:rw \
+  -v "$BB_ROOT":/work/bugbounty:rw \
   -v "$VOL_SHARE":/home/hunter/.local:rw \
   -v "$VOL_CFG":/home/hunter/.config/cyberstrike:rw \
   -w /app \
