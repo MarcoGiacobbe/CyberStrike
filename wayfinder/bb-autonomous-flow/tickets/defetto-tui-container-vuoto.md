@@ -23,20 +23,42 @@ Quindi: **il TUI si avvia e produce output, ma l'output non viene
 visualizzato.** Non è un crash, non è un errore di dipendenze, non è il
 container.
 
-## Ipotesi, in ordine di probabilità — NON ANCORA VERIFICATA
+## CAUSA MISURATA (2026-09-26) — il TUI non gestisce l'assenza di TTY
 
-1. **Dimensione del terminale.** Il TUI ha bisogno di un certo numero di
-   righe/colonne; sotto quella soglia disegna una scena vuota. Da verificare
-   con `stty size` **dentro** una sessione TTY reale (non misurabile da
-   Hermes: `docker run -it` qui risponde `the input device is not a TTY`).
-2. **`TERM` non impostato o sbagliato** dentro il container: senza un
-   terminfo adeguato molte librerie TUI renderizzano il nulla invece di
-   segnalare l'errore. Verificare con `echo $TERM` e provare
-   `TERM=xterm-256color`.
-3. **Il TUI scrive solo sequenze di posizionamento cursore** e senza un
-   terminale che le interpreti resta 0 byte di testo visibile: è già
-   confermato che 648 byte di ESC esistono, quindi la resa dipende
-   dall'interprete del terminale, non dall'applicazione.
+Il TUI chiama `useTerminalDimensions()` (`tui/app.tsx:200`) e usa il risultato
+per il box radice: `width={dimensions().width} height={dimensions().height}`
+(`app.tsx:745-746`). `@opentui/core` 0.1.88 legge le dimensioni da
+`process.stdout`.
+
+Misurato dentro l'immagine, con uno script banale:
+
+```
+senza -t :  isTTY=false   rows=undefined  columns=undefined
+con    -t:  isTTY=true    rows=0          columns=0
+con COLUMNS/LINES:  rows=0  columns=0     (le env NON hanno effetto)
+```
+
+**Il TUI riceve dimensione ZERO e disegna una scena vuota senza segnalare
+errore**: per il codice `0` è una dimensione legittima, quindi nessun errore,
+nessun fallback. `COLUMNS`/`LINES` non aiutano: il valore non viene da l'ambiente.
+
+Questo spiega anche il "TUI che non rende nei PTY sintetici" documentato da
+prima: è **lo stesso difetto**, non un fatto separato. `stty` sull'host Hermes
+dice `not a tty` — la sessione in cui vivo non ha terminale, quindi ogni
+misura di rendering del TUI lì è meaningless.
+
+**Conseguenza per la diagnosi**: non è la finestra dell'utente, non è
+Chromium, non è il container. Il TUI ha bisogno di dimensioni reali dal
+terminale, e dentro il container non le riceve.
+
+**Come si risolve** (da scegliere/provare):
+1. `--env COLUMNS=... LINES=...` — **misurato: NON funziona**.
+2. Dare al container un vero TTY con dimensioni: la pista è che il TUI
+   funziona sull'host con terminale reale, quindi la domanda è se
+   `docker run -it` in una shell di login reale passa le dimensioni giuste
+   (nel mio test il `-t` è allocato da uno pseudo-terminal di dimensione 0).
+3. Non usare il TUI dentro il container: eseguire CyberStrike in modalità
+   `run` non interattiva, che non dipende dalle dimensioni.
 
 ## Perché non l'ho chiuso io
 
