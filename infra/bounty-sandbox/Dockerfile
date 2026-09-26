@@ -14,7 +14,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git jq python3 python3-pip \
       nmap netcat-openbsd openssh-client dnsutils iproute2 \
       ripgrep less procps file unzip \
+      chromium chromium-driver chromium-sandbox \
     && rm -rf /var/lib/apt/lists/*
+
+# Chromium ha bisogno di /dev/shm piu' grande della meta' RAM: senza, il browser
+# headless crasha con "Failed to move to new namespace" su /dev/shm piccolo.
+# Chrome usa i namespace per l'isolamento dei processi helper.
+RUN mkdir -p /dev/shm && chmod 1777 /dev/shm
+
+# "No usable sandbox": Chromium ha bisogno di user namespace non privilegiati.
+# Il pacchetto chromium-sandbox fornisce il SUID helper, ma in un container con
+# --cap-drop=ALL + no-new-privileges non puo' funzionare: SUID e' esattamente
+# cio' che no-new-privileges blocca. Si puo' invece lasciare i USER namespace
+# abilitati: sono isolati per costruzione, non richiedono capacita'.
+# MISURATO: con il pacchetto installato ma i namespace disabilitati,
+# l'avvio fallisce. Serve SYS_ADMIN OPPURE usare i namespace.
 
 # Struttura delle cartelle di lavoro. programmi/ e' l'unica zona con dati
 # persistenti; sorgenti/ e' in sola lettura per costruzione (la RO la mette

@@ -134,9 +134,34 @@ installato nell'immagine. `docker` serve solo a te, dall'host.
    che il path non esiste.
 3. Verificare se `nmap` serve `NET_RAW` e scegliere.
 
-### FASE 2 — lancio del TUI dentro il container
-`tui`/`bun dev` dentro il container, volume di `~/.cyberstrike` e del workspace.
-Verificare che un agente di un test reale non riesca a scrivere fuori.
+### FASE 2 — lancio del TUI dentro il container (IN CORSO)
+
+**Scoperta che cambia la Fase 2**: il bounty agent **è un agente browser**.
+`packages/hackbrowser/src/agent.ts:1` importa `playwright`, e
+`api.ts:151` fa un preflight che **fallisce se `chromium.executablePath()` non
+esiste**. Quindi un container senza browser non è un agente con limiti: è un
+**agente muto**, e il fallimento sarebbe un preflight, non un errore di
+permessi. Chromium aggiunto all'immagine; `browser-test.sh` verifica che il
+browser **parta davvero** e scopre se il suo sandbox interno funziona con
+`--cap-drop=ALL` (se non funziona serve `--no-sandbox`: si scopre lì, non a
+runtime con un crash generico).
+
+`run-sandbox.sh` monta: repo in `/app` (rw, è il codice), programmi in
+`/work/programmi` (rw, i dati), sorgenti in `/work/sorgenti` (ro). Codice e
+dati restano separati di proposito: il volume dei programmi deve essere
+rimontabile senza toccare il codice.
+
+**Chrome sandbox: MISURATO che è irraggiungibile, e il rimedio intuitivo è
+sbagliato.** Dentro il container `unshare --user` fallisce con `Operation not
+permitted` (i user namespace sono disabilitati da Docker di default, anche se
+sull'host `unprivileged_userns_clone=1`). Chromium esce con `No usable
+sandbox!`. Ho provato a togliere `no-new-privileges` per sbloccarlo: **non
+cambia** (`rc=1`, stesso errore) — il blocco è sui namespace, non su SUID.
+Quindi la difesa costa `--no-sandbox` **a Chromium solo**, e
+`--security-opt=no-new-privileges` resta attivo: è la difesa più forte
+disponibile, il browser perde il suo sandbox *interno*, non il confine del
+container. Browser verificato funzionante: `Chromium 154.0.8037.57`, headless,
+rendering DOM OK.
 
 ### FASE 3 — cablaggio nel fork
 `bb hunt` (o un flag di avvio) che lancia la sessione nel container giusto.
