@@ -193,3 +193,111 @@ ambienti puliti.
 detto "ora va". Se compare di nuovo, il passo utile e' catturarlo **mentre
 accade** (stack completo + timestamp) invece di tentare di riprodurlo a
 posteriori: da solo non basta a chiudere il ticket.
+
+## Indagine 2026-09-26, terza tappa — due thread sullo stesso DB: ESCLUSA
+
+Il subagent aveva notato che `new Worker` in Bun e' un **thread**, non un
+processo. Riformulata la domanda di conseguenza: ogni thread ha il proprio
+isolate e quindi il proprio modulo, dunque **due handle `bun:sqlite` distinti
+sullo stesso file WAL**. E' il caso che `Instance.provide` +
+`InstanceBootstrap` (worker.ts:125-131) producono davvero: il worker apre il
+DB all'avvio con `checkUpgrade`.
+
+Il test e' stato costruito in due tempi, e il primo era sbagliato.
+
+**Primo tentativo, invalido.** Ho usato un `Worker` inline (codice come
+stringa). Muore subito:
+
+```
+worker onerror: AggregateError: Error in worker
+TIMEOUT: worker non ha risposto
+```
+
+Un Worker inline **non puo' importare `bun:sqlite`**. Il mio test non aveva
+mai messo due thread sul DB: il worker moriva prima di aprire niente, e il
+"non riprodotto" che avrei potuto concludere era privo di significato. Motivo
+per cui l'ho rifatto con `w.onerror` esplicito: senza, il fallimento del worker
+era invisibile e il test passava per verde.
+
+**Secondo tentativo, valido.** Worker su file (`sqlite-worker.ts`), la stessa
+forma di `cli/cmd/tui/worker.ts`:
+
+```
+=== 2 thread, 200 scritture ciascuno x 3 round, db=/tmp/tr.db ===
+  round 1/3  main.rows=400 worker.rows=336  errori=0
+  round 2/3  main.rows=400 worker.rows=400  errori=0
+  round 3/3  main.rows=400 worker.rows=400  errori=0
+  codici: nessuno
+  NON riprodotto con 2 thread sullo stesso file WAL
+```
+
+`main.rows=400` contro `worker.rows=336` al primo round e' la prova che i due
+thread hanno scritto **davvero in parallelo** (il worker contava mentre il main
+aveva gia' finito). Quindi il test e' valido e il risultato e' negativo.
+
+**Terza ipotesi esclusa.** Quattro in totale: concorrenza fra processi, statement
+dopo close, volume/filesystem, due thread sullo stesso file.
+
+### Cosa resta, e perche' non lo chiudo
+
+L'unica condizione che non ho ancora replicato e' il TUI vero dentro il
+container, dove l'utente l'ha visto una volta, all'avvio. Richiede un container
+(800MB-1.8GB) e va fatto con l'utente presente, perche' l'errore e' intermittente.
+
+Se ricompare, catturarlo **mentre accade** e' l'unico modo che chiude il
+ticket: stack + timestamp + testo esatto della riga che precede l'errore nel
+TUI. Su quello posso isolare la forma esatta del `data` che fallisce.
+
+## TUI VERO nel container — eseguito, errore NON riprodotto
+
+Percorso completo dentro il container, provider `-m omni/auto/best-coding`,
+sessione reale, tool realmente eseguito:
+
+```
+=== V12: sessione reale, provider, un tool ===
+  messaggio: Esegui il tool read su README.md
+  provider:  omni/auto/best-coding
+
+> cyberstrike · auto/best-coding
+
+→ Read README.md
+Ho eseguito `read` su `README.md`. Il file descrive CyberStrike, le sue
+funzionalità, gli agenti, l'installazione e i link alla documentazione.
+
+=== residui (deve essere 0) ===
+0
+```
+
+**Nessun `SQLITE_MISUSE`.** Lo stesso percorso che lo ha prodotto la prima
+volta (TUI, avvio, provider, tool, main + Worker) ora gira pulito. Provato
+anche il percorso `run` non interattivo: risposta corretta, zero errori.
+
+## Chiusura — NON riprodotto, difetto non isolato
+
+Quattro ipotesi escluse con prove eseguibili:
+
+1. scrittura concorrente fra processi — `sqlite-race.py`, 0 errori
+2. statement/handle dopo close — errore diverso, `close()` mai chiamato
+3. volume/filesystem — i volumi sono ext2/ext3, WAL attivo, 200 upsert, 0 errori
+4. due thread sullo stesso file WAL — `sqlite-thread-race.ts`, 0 errori,
+   con `main.rows=400 / worker.rows=336` che prova la concorrenza reale
+
+Il difetto **non e' stato riprodotto in nessuna condizione che ho saputo
+costruire**, compreso il TUI vero che e' l'ambiente dove l'utente l'ha visto.
+
+**Lo chiudo come NON RIPRODOTTO, non come risolto.** La differenza conta: se
+ricompare, non e' un ticket che si puo' chiudere risolvendo un bug noto, ma
+un caso di cui non ho la firma. Il primo tentativo di indagine su questo
+errore (la concorrenza) si e' rivelato sbagliato, e per due volte ho rischiato
+di dichiararlo risolto: una lo feci io, e una il subagent dovette
+contestarmela. Un ticket chiuso come risolto che poi si riapre e' piu' costoso
+di un ticket aperto con quattro ipotesi scartate e una prova che manca.
+
+**Cosa serve se ricompare** (operativo, non altro codice):
+- testo esatto della riga che precede l'errore nel TUI
+- stack completo con timestamp
+- un solo tentativo, catturato mentre accade
+
+Con quei tre dati si puo' isolare la forma del `data` che fallisce in
+`updateMessage`, che e' l'unica cosa che i miei test non hanno mai toccato:
+hanno provato forme note, non la forma reale a runtime.
