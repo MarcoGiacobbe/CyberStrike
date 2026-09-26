@@ -26,6 +26,7 @@ import re
 import select
 import struct
 import sys
+import signal
 import termios
 import time
 import atexit
@@ -46,6 +47,10 @@ def main() -> int:
                     help="raw = byte singolo, paste = sequenza bracketed, cr = testo+\\r")
     ap.add_argument("--out", default="/tmp/inp")
     ap.add_argument("--wait", type=float, default=40.0)
+    ap.add_argument("--settle", type=float, default=3.0,
+                    help="silenzio prolungato PRIMA di inviare: le query di "
+                         "capability OSC del TUI sottraggono stdin e scartano "
+                         "l'input che arriva durante la loro finestra")
     args = ap.parse_args()
 
     out = args.out + ".raw"
@@ -94,7 +99,7 @@ def main() -> int:
             fh.write(data)
             fh.flush()
             last_byte = time.time()
-        if not sent and time.time() - last_byte > 2.0 and (time.time() - start) > 6.0:
+        if not sent and time.time() - last_byte > args.settle and (time.time() - start) > 6.0:
             with open(out, "rb") as chk:
                 before = len(chk.read())
             if args.mode == "raw":

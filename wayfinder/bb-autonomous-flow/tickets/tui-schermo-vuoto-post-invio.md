@@ -94,3 +94,54 @@ vivi.
 **Non risolto.** La causa non e' isolata. Il criterio di chiusura di #14 resta
 quello giusto: una sessione reale, messaggio inviato, risposta **resa a
 schermo**, almeno un tool eseguito.
+
+## Seconda misura — l'input non entra, e il difetto NON e' del mio harness
+
+Dopo la correzione del timing (attesa di stabilizzazione, `--settle`) ho
+riprovato. Il testo continua a non entrare:
+
+```
+INVIATO[cr] a_s=9.8 payload=b'ciao zio\r'
+byte_finali=10839
+chiave_'ciao zio'_a_schermo=False
+```
+
+Quindi non era una questione di quando ho inviato.
+
+**Test di controllo, questo e' il passaggio decisivo.** Ho fatto recapitare gli
+stessi byte dal mio harness a `cat` in raw mode:
+
+```
+INVIATO[raw] a_s=6.0 payload=b'ABCDEFGH'
+raw catturato: b'ABCDEFGH'
+```
+
+Il trasporto dei tasti del mio harness **e' corretto**. Quindi il difetto e'
+del TUI e non dello strumento di misura. Prima misura in cui la domanda era
+"dove e' il difetto?" ha una risposta.
+
+Una nota che corregge un'altra credenza mia: quei 10.633 byte "cresciuti dopo
+l'invio" **non** erano il testo che entrava. Sono ridisegno. Nella seconda
+meta' del log non c'e' `ciao`, e quello che si legge e' il nome del modello,
+che **cambia da solo** fra un render e l'altro (`DeepSeek V4.1 Flash`, poi
+`Nano Banana Pro Preview`, entrambi OpenRouter). Il TUI ridispiega a caldo
+mentre io scrivo. Crescita di byte non vuol dire input ricevuto.
+
+## Cosa so del TUI, dal codice
+
+Il TUI non e' Ink: e' **Solid + `@opentui/solid`**, con un parser di input
+proprio (`node_modules/@opentui/core`, ~742 KB). Fa `stdin.setRawMode(true)` e
+`stdin.on("data", ...)` (`index-nkrr8a4c.js`).
+
+Un dettaglio che va tenuto presente: `thread.ts:112` avvia il TUI dentro un
+`new Worker(...)`, cioe' un worker, non il processo principale. Se il worker
+non eredita lo stdin, l'input non arriva — ma questo spiegherebbe il difetto
+sempre, anche sulla macchina dell'utente, e li' il TUI funziona. Quindi
+`Worker` non basta a spiegare: manca il pezzo che distingue il mio ambiente
+da quello interattivo.
+
+## Cosa resta aperto
+
+La causa nel TUI **non e' isolata**. Il difetto e' definitivamente nel TUI, ma
+non so ancora se e' un difetto del prodotto o una condizione del mio ambiente di
+misura (PTY sintetica, dimensione, focus, `TERM`). Non lo dichiaro risolto.
