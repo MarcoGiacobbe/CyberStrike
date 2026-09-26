@@ -1,66 +1,71 @@
 #!/bin/bash
-# Allinea l'issue #2 alla mappa.
+# Pubblica wayfinder/bb-autonomous-flow/MAP.md come corpo dell'issue #2.
 #
-# STORIA DEL DIFETTO (2026-09-26, da non ripetere): la MAP esisteva in due copie
-# indipendenti — il file nel repo e il corpo dell'issue #2 — tenute allineate a
-# mano. Divergono ogni volta che una delle due viene toccata. Sono arrivate a
-# essere due mappe diverse: 175 righe nel file contro 133 riscritte a mano
-# sull'issue, con sezioni presenti in una e assenti nell'altra.
+# Che cosa fa, e perché esiste. La MAP è UNA sola informazione che deve essere
+# leggibile in due posti: il file nel repo, che è la versione lavorata, e
+# l'issue GitHub #2, che è la bacheca dove si discute. Sono due copie dello
+# stesso testo, quindi vanno tenute allineate — a mano divergono, perché ognuna
+# viene toccata in momenti diversi e nessuno si ricorda dell'altra.
 #
-# COME SI RISOLVE, e perché non con una terza sincronizzazione: non si tiene
-# allineata la MAP, non la si duplica proprio. L'issue contiene un PUNTATORE al
-# file più un indice delle sezioni. Il testo della mappa vive in un posto solo,
-# dentro il repository, che è già versionato e già nel branch.
+# Prima di questo script sono arrivate a essere due mappe diverse: 175 righe nel
+# file contro 133 riscritte a mano sull'issue, con sezioni presenti in una e
+# assenti nell'altra. E la MAP contraddiceva sé stessa: V6 dichiarata "risolta"
+# in alto e "parziale" in coda, il difetto TUI "aperto — BLOCCANTE" in una riga
+# e "ritirato" in quella immediatamente seguente.
 #
-# Conseguenza voluta: modificare la MAP non richiede più di scrivere il file e
-# fare un commit. Niente passo di sincronizzazione, quindi niente che si possa
-# dimenticare — la divergenza che questo script impediva ora non è possibile
-# perché il testo non è duplicato da nessuna parte.
+# L'issue pubblica il testo INTEGRALE del file, non un riassunto: se riassumesse,
+# l'issue stessa diventerebbe una seconda copia da tenere allineata — cioè di
+# nuovo due fonti, solo più corte.
 #
 # Uso:
-#   ./sync-map-issue.sh          -> pubblica MAP-ISSUE.md come corpo dell'issue #2
-#   ./sync-map-issue.sh check    -> mostra le dimensioni senza toccare nulla
+#   ./sync-map-issue.sh          -> pubblica e verifica
+#   ./sync-map-issue.sh check    -> confronta senza modificare nulla
+#   ./sync-map-issue.sh verify   -> solo verifica (esce 1 se divergono)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-BODY="$REPO/wayfinder/bb-autonomous-flow/MAP-ISSUE.md"
 MAP="$REPO/wayfinder/bb-autonomous-flow/MAP.md"
 ISSUE="${CYBERSTRIKE_MAP_ISSUE:-2}"
 
 cd "$REPO"
 
-[ -f "$BODY" ] || { echo "ERR: manca $BODY" >&2; exit 1; }
-[ -f "$MAP" ]  || { echo "ERR: manca $MAP" >&2; exit 1; }
+[ -f "$MAP" ] || { echo "ERR: MAP non trovata in $MAP" >&2; exit 1; }
 
-# Il puntatore dentro il corpo deve puntare al branch giusto: su un branch morto
-# il link apre una 404 e l'issue torna a essere un testo senza fonte.
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if ! grep -q "blob/$BRANCH/wayfinder/bb-autonomous-flow/MAP.md" "$BODY"; then
-  echo "ERR: il link in MAP-ISSUE.md non punta al branch corrente ($BRANCH)" >&2
-  echo "     correggilo, altrimenti l'issue rimanda a una 404" >&2
-  exit 1
-fi
+# `-B` perché GitHub aggiunge una newline finale al corpo dell'issue: senza
+# questa opzione `diff` segnalerebbe per sempre un'ultima riga vuota come
+# differenza, e la verifica segnalerebbe una divergenza che non esiste.
+check() {
+  local tmp
+  tmp="$(mktemp)"
+  gh issue view "$ISSUE" --json body --jq '.body' > "$tmp"
+  if diff -q -B "$MAP" "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    echo "allineati: l'issue #$ISSUE contiene esattamente $MAP"
+    return 0
+  fi
+  echo "DIVERGONO — l'issue #$ISSUE NON contiene $MAP:"
+  diff -B "$MAP" "$tmp" | head -"${DIFF_LINES:-40}" || true
+  rm -f "$tmp"
+  return 1
+}
 
 case "${1:-push}" in
   check)
-    echo "MAP:           $MAP"
-    echo "  $(wc -l < "$MAP") righe, $(wc -c < "$MAP") byte"
-    echo "corpo issue:   $BODY"
-    echo "  $(wc -l < "$BODY") righe, $(wc -c < "$BODY") byte"
+    echo "file MAP:       $(wc -l < "$MAP") righe, $(wc -c < "$MAP") byte"
     echo "issue #$ISSUE: $(gh issue view "$ISSUE" --json body --jq '.body' | wc -l) righe"
+    check || true
+    ;;
+  verify)
+    check
     ;;
   push)
-    gh issue edit "$ISSUE" --body-file "$BODY" >/dev/null
-    echo "issue #$ISSUE aggiornata"
-    TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
-    gh issue view "$ISSUE" --json body --jq '.body' > "$TMP"
-    if diff -q -B "$BODY" "$TMP" >/dev/null; then
-      echo "verificato: il corpo remoto e' identico a MAP-ISSUE.md"
-    else
-      echo "DIVERGE:"; diff -B "$BODY" "$TMP" | head -20; exit 1
-    fi
+    gh issue edit "$ISSUE" --body-file "$MAP" >/dev/null
+    echo "issue #$ISSUE pubblicata da $MAP"
+    check
     ;;
   *)
-    echo "uso: $0 [check|push]" >&2; exit 1 ;;
+    echo "uso: $0 [push|check|verify]" >&2
+    exit 1
+    ;;
 esac

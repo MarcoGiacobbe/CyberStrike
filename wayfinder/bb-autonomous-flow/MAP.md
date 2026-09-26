@@ -36,7 +36,7 @@ versione deterministica e testabile dello stesso flusso.
 1. **Stato perso a ogni avvio** — il comando manuale non monta volumi.
    Prova: avvio 1 scrive `~/.local/share/cyberstrike/MARKER.txt` → OK; avvio 2 →
    `No such file or directory`. Issue **#15**.
-2. **Programmi invisibili al codice** — `bounty-state.ts:113` calcola
+2. **Programmi invisibili al codice** — `bounty-state.ts:110-114` calcola
    `<root>/bugbounty/programs/`; con `CYBERSTRIKE_HOME=/work` cerca
    `/work/bugbounty/programs`, ma il mount è su `/work/programmi`. `bcny`,
    `bbtest`, `smoketest`, `security`, `bookingcom` **non esistono per il
@@ -80,7 +80,7 @@ versione deterministica e testabile dello stesso flusso.
 - [Help comandi bb](tickets/help-comandi-bb.md): APERTO (2026-09-24) — `cyberstrike bb --help` non elenca le azioni (connect/sync/mail/accounts/…); le descrizioni non riflettono il comportamento reale di `bb sync` (limite 100 scope senza paginazione, niente known issues/hacktivity, policy troncata a 500 char nel JSON). Difetti adiacenti annotati: paginazione assente, wildcard non convertiti in pattern
 - [Sandbox](tickets/sandbox-scritture-perimetro.md): FASE 1 FATTA (2026-09-25, commit `84d3d4a34`) — gate implementato, 5 buchi chiusi dopo verifica avversariale indipendente. **V8 ha aggiunto: `buildProjectRuleset`/`diagnose` NON hanno chiamanti di produzione — il perimetro è una difesa di libreria finché `bb hunt` non lo istanzia.** Restano aperti: V1/V2/V3/V6, la decisione su `always:["*"]` a monte, e i buchi P1–P7 di V8 (matching per uguaglianza, guardia B14 solo su `rel===""`, symlink non dereferenziati)
 - [Contenimento a livello kernel](tickets/sandbox-docker-contenitore.md): **APERTO (2026-09-26) — V6 PARZIALE, non risolto**. Il *confine* e' davvero nel kernel (escape-test 6/6 negati, CapEff=0) e il TUI ci gira dentro, ma **non e' dimostrato che il flusso bug bounty funzioni end-to-end**: manca una sessione reale con risposta resa + tool eseguito (vedi [defetto-tui-messaggio-vuoto](tickets/defetto-tui-messaggio-vuoto.md) e V12). Dichiararlo 'risolto per impianto' era una conclusione anticipata. Decisione utente: *tutto* l'agente dentro il container, non solo `bb hunt`. V6 era dichiarato "limite per scelta di design" perché il perimetro è un gate applicativo in JS — un gate che sta dove sta l'avversario non è un confine. Il container sposta il confine nel kernel (namespace + mount RO) e **rende G4 privo di soggetto**: dentro il container `/etc` è un file vuoto e `/home/marco` non è montato, quindi "scrivere fuori dal progetto" non è una regola da rispettare ma una posizione in cui non esiste. Punto d'innesto: `packages/cyberstrike/src/tool/bash.ts:312` — **una sola riga**, l'unico `spawn` da cui esce tutto. Docker 29.1.3 presente; 25G liberi su `/var/lib/docker`; budget per container, **misurato su quello che l'utente avvia davvero**: `--memory=3g --pids-limit=1024` (la MAP dichiarava 2g/256: disallineamento corretto qui; la decisione sull'allineamento fra budget dichiarato e budget usato resta all'utente). Struttura `/work/programmi/<p>` (rw) + `/work/sorgenti/` (ro). **Perché "tutto l'agente" e non solo `bb hunt`**: il TUI è già un processo separato, quindi se il TUI gira nel container il confine vale per TUTTI gli agenti. Da decidere: se `docker` resta in `WRITE_COMMANDS`, l'agente non può lanciarlo da solo senza chiederti. **FASE 1 misurata** (`d9c445950`): immagine costruita, `escape-test.sh` eseguito davvero → 6 tentativi di fuga, **0 riusciti**, `CapEff=0`. **FASE 2 in corso** — e la scoperta che la rende diversa da una normale "avvia il TUI": il bounty agent **è un agente browser** (`hackbrowser/src/agent.ts:1` importa playwright, `api.ts:151` fa preflight su `chromium.executablePath()`): senza Chromium nel container l'agente è **muto**, e fallisce con un preflight, non con un errore di permessi. **PRIORITÀ UTENTE (2026-09-26): il rafforzamento del confine è NON PRIORITARIO** — l'agente non nasce con l'intenzione di scappare, il confine serve a fermare un **errore**. Prioritario è far funzionare il docker (Fase 2→3). Misurato: `nmap -sS` richiede **root + NET_RAW insieme** (`--cap-add` da solo non basta, `CapEff` resta 0); `nmap -sT` ok senza privilegi. | sandbox-scritture-perimetro, hunt-comando-entry-point | — |
-- [Difetto: il container perde i dati a ogni avvio](tickets/difetto-persistenza-stato.md): **APERTO (2026-09-26) — 4 misure, 1 bloccante**. Segnalato dall'utente, poi misurato. (1) Il comando manuale non monta nessun volume di stato: avvio 1 scrive un file in `~/.local/share/cyberstrike/`, avvio 2 dice `No such file or directory`. (2) `run-sandbox.sh bash -c '...'` fallisce con `Run 'docker run --help'`: ogni argomento finisce in un comando CyberStrike, mai in bash — ma e' cosi' che `verify.sh`/`e2e-test.sh` lo invocano. (3) **Il piu' grave**: `bounty-state.ts:113` calcola `<root>/bugbounty/programs/` e con `CYBERSTRIKE_HOME=/work` cerca `/work/bugbounty/programs`, ma il mount e' su `/work/programmi` → `No such file or directory`. Tutti i programmi dell'host (`bcny`, `bbtest`, `smoketest`, `security`, `bookingcom`) sono **invisibili al codice**. (4) `CYBERSTRIKE_HOME=/work` ma `/work` e' root-owned e non e' un volume: `touch /work/MARKER` → `Permission denied`, e `--rm` lo cancella. Issue GitHub **#15**. | sandbox-docker-contenitore | — |
+- [Difetto: il container perde i dati a ogni avvio](tickets/difetto-persistenza-stato.md): **APERTO (2026-09-26) — 4 misure, 1 bloccante**. Segnalato dall'utente, poi misurato. (1) Il comando manuale non monta nessun volume di stato: avvio 1 scrive un file in `~/.local/share/cyberstrike/`, avvio 2 dice `No such file or directory`. (2) `run-sandbox.sh bash -c '...'` fallisce con `Run 'docker run --help'`: ogni argomento finisce in un comando CyberStrike, mai in bash — ma e' cosi' che `verify.sh`/`e2e-test.sh` lo invocano. (3) **Il piu' grave**: `bounty-state.ts:110-114` calcola `<root>/bugbounty/programs/` e con `CYBERSTRIKE_HOME=/work` cerca `/work/bugbounty/programs`, ma il mount e' su `/work/programmi` → `No such file or directory`. Tutti i programmi dell'host (`bcny`, `bbtest`, `smoketest`, `security`, `bookingcom`) sono **invisibili al codice**. (4) `CYBERSTRIKE_HOME=/work` ma `/work` e' root-owned e non e' un volume: `touch /work/MARKER` → `Permission denied`, e `--rm` lo cancella. Issue GitHub **#15**. | sandbox-docker-contenitore | — |
 - [Difetto: schermo vuoto DOPO l'invio del messaggio](tickets/defetto-tui-messaggio-vuoto.md): **APERTO (2026-09-26) — BLOCCANTE per l'uso, e la diagnosi precedente era sul bersaglio sbagliato**. L'utente misura un fatto che io avevo negato: dentro il container `bun run dev` **apre il TUI** (schermata tipo OpenCode), configura il provider, scrive un messaggio — **e a quel punto arriva il vuoto**. **Misurato con PTY vero 140x40 dentro il container**: il TUI **disegna** — 192 colori di sfondo, 159 colori di testo, 10 show/hide cursore, 6 modalita' sincronizzata, 6 posizionamenti assoluti (`ESC[22;37H`), 11049 byte di testo. Le mie tre conclusioni precedenti erano sbagliate: il TUI non e' fermo per TTY/dimensioni/`TERM`/renderer/provider/Chromium (tutti scartati con misura). Il difetto e' a valle: **invio -> sessione -> prima risposta provider -> render**, e quel passaggio **non e' ancora stato misurato**. Falsa pista gia' incontrata: scrivere il messaggio come caratteri grezzi sul PTY fa aprire la command palette (la `c` e' una scorciatoia) e produce `No results found` (`ui/dialog-select.tsx:270`) — **e' inquinamento del test**, non il difetto. Chiusura = sessione reale con risposta resa a schermo + un tool eseguito, non "produce byte" (i byte li produceva gia'). | sandbox-docker-contenitore | — |
 - ~~[Difetto: TUI vuoto nel container](tickets/defetto-tui-container-vuoto.md)~~: **RITIRATO** — le sue tre conclusioni (non parte / non disegna / dimensioni zero) sono state falsate dalla misura con PTY reale. Il ticket resta come lezione metodologica, non come difetto risolto. | — | — |
 
@@ -128,7 +128,7 @@ questo elenco non è vuoto per le sue voci.
 | V12 | **Il flusso bug bounty funziona DAVVERO dentro il container**: sessione reale, messaggio inviato, risposta del provider resa a schermo, almeno un tool dell'agente eseguito, perimetro di scrittura rispettato. È la verifica che chiude V6 e il difetto TUI, e sostituisce la regola "produce byte". | sandbox-docker-contenitore, hunt-comando-entry-point | richiede un container in piedi + provider configurato + un programma reale in `programs/` |
 | V4 | `Paginazione a 100` in `bb sync` e wildcard non convertiti in pattern | help-comandi-bb | difetti annotati, non ancora ticket autonomi |
 | V5 | `security` come caso di test per `resolveIdentity()` (programma che CHIEDE header custom) | identity-da-policy | serve il fetch di un programma reale che richieda header |
-| V6 | ~~Contenimento a livello kernel~~ — **PARZIALE, DA RILEGGERE (2026-09-26)**: il *confine* e' davvero nel kernel (escape-test 6/6 negati, CapEff=0) e il TUI ci gira dentro, ma **non e' dimostrato che il flusso bug bounty funzioni end-to-end dentro il container**: manca una sessione reale con risposta resa + tool eseguito (vedi [defetto-tui-messaggio-vuoto]). Dichiararlo 'risolto per impianto' era una conclusione anticipata, della stessa specie di quelle ritirate oggi. Vedi [sandbox-docker-contenitore](tickets/sandbox-docker-contenitore.md). | sandbox-scritture-perimetro | il confine regge; l'uso reale no, ancora | non lo risolve il codice, lo risolve l'impianto. Vedi [sandbox-docker-contenitore](tickets/sandbox-docker-contenitore.md). Il perimetro in JS resta come secondo livello, per il caso "lo eseguo senza Docker". | sandbox-scritture-perimetro | risolto dal container, non dal perimetro |
+| V6 | ~~Contenimento a livello kernel~~ — **PARZIALE, DA RILEGGERE (2026-09-26)**: il *confine* e' davvero nel kernel (escape-test 6/6 negati, CapEff=0) e il TUI ci gira dentro, ma **non e' dimostrato che il flusso bug bounty funzioni end-to-end**: manca una sessione reale con risposta resa + tool eseguito (vedi [defetto-tui-messaggio-vuoto](tickets/defetto-tui-messaggio-vuoto.md) e V12). Dichiararlo 'risolto per impianto' era una conclusione anticipata, della stessa specie di quelle ritirate oggi. | sandbox-scritture-perimetro | il confine regge; l'uso reale no |
 
 ## Not yet specified
 
@@ -149,27 +149,39 @@ questo elenco non è vuoto per le sue voci.
 
 ## Disallineamenti trovati (audit 2026-09-26)
 
-Correzioni già applicate in questa sezione:
+Trovati e **corretti** in questa tornata:
 
 - `struttura-directory-progetto` diceva `~/bugbounty/`; la realtà è
   `~/.cyberstrike/bugbounty/programs/<programma>/` (misurato, `~/bugbounty/`
   non esiste). Superata da `$CYBERSTRIKE_HOME` + `programs/`.
 - Budget container: dichiarati 2g/256 pid, usati 3g/1024.
-- **E1** confermato (nessun caller di produzione dopo la pulizia `_adv*`).
+- **E1** confermato: nessun caller di produzione dopo la pulizia degli `_adv*`.
 - Spazzatura `_adv{,2,3,4,-always}.ts` rimossa dal tracking git.
 - `V6` da "risolto" a "parziale": il confine regge, l'uso no.
+- **Due righe in opposto** sul difetto TUI: una diceva "APERTO — BLOCCANTE",
+  l'altra subito sotto "RITIRATO". Rimossa la prima.
+- **Link rotto**: la riga "Verifica E2E capacità attuali" puntava a un ticket
+  che non è mai esistito. Tolto il link, la sostanza resta.
+- **Riga V6 malformata**: avevo 8 separatori di colonna invece di 4 (una coda
+  della versione precedente incollata dentro la nuova). Ripulita.
+- **La MAP viveva in due copie** — il file e il corpo dell'issue #2, tenute
+  allalineate a mano, arrivate a essere due mappe diverse (175 righe contro
+  133, con sezioni diverse). **Risolto alla radice**: il testo sta in un posto
+  solo (`MAP.md`, già versionato) e l'issue contiene un puntatore e un indice
+  (55 righe). Tre controlli in `.github/workflows/map-issue-sync.yml`, tutti
+  provati reggere contro la regressione che impediscono.
 
-Ancora da mettere a posto (fuori dal mio intervento finora):
+Ancora da mettere a posto:
 
-- ~~**Le issue GitHub** non riflettono nessuno di questi fatti~~ — **RISOLTO
-  2026-09-26**: #2 (map) e #12 (sandbox) riscritte interamente con i fatti
-  misurati; create **#14** (schermo vuoto dopo l'invio) e **#15** (perdita dati
-  + programmi invisibili al codice); #13 (verifica V11) aggiornata con i canali
-  ancora da provare. **#8** (orchestrator, 2026-09-24) resta la più vecchia e
-  non riflette nessuno dei fatti di oggi: da riallineare quando si la tocca.
 - **`bb hunt` non esiste**: `grep` su `packages/cyberstrike/src/cli/cmd/bb*`
-  non trova il sottocomando. È la riga 8 della MAP ("Destination") e nessun
-  ticket lo ha mai marcato come non implementato — la MAP lo dà per entry point
-  esistente.
+  non trova il sottocomando. È la riga 8 ("Destination") e nessun ticket lo
+  ha mai marcato come non implementato — la MAP lo dà per entry point
+  esistente. **È la lacuna più grande fra obiettivo e realtà.**
+- **Issue #8** (Orchestrator del flusso, 2026-09-24) non riflette nessuno dei
+  fatti del 26/09: da riallineare.
+- **7 difetti aperti nel container** (vedi "Stato reale"): nessuno chiuso.
+  I bloccanti sono la persistenza dello stato e i programmi invisibili al
+  codice — finché la base è sbagliata, gate e perimetro sono spenti in
+  silenzio e V6/V12 restano non misurabili.
 - `Not yet specified` → i due punti già annotati (target toccato, promozione
   note) restano aperti e sono collegati a `stato-progetto`.

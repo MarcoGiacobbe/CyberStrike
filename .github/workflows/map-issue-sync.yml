@@ -1,42 +1,40 @@
 name: map-issue-sync
 
-# Una sola MAP. Il testo vive in `wayfinder/bb-autonomous-flow/MAP.md` dentro il
-# repository, che è già versionato. L'issue #2 non lo duplica: contiene un
-# puntatore al file e un indice delle sezioni.
+# La MAP è una sola informazione in due posti: il file nel repo e l'issue #2.
+# Devono coincidere riga per riga.
 #
-# Perché questo workflow esiste: la MAP è stata per settimane in due copie
-# indipendenti — il file e il corpo dell'issue #2 — tenute allineate a mano, fino
-# a diventare due mappe diverse (175 righe contro 133, con sezioni diverse).
-# Tenere allineate due copie a mano non funziona: non è un problema di
-# attenzione, è la struttura del problema. Da qui la regola: il testo non si
-# duplica, e questo controllo impedisce che qualcuno lo reintroduca.
+# Perché questo workflow esiste: tenere allineate due copie a mano non funziona.
+# Sono arrivate a essere due mappe diverse (175 righe nel file contro 133
+# riscritte a mano sull'issue, con sezioni diverse), e la MAP contraddiceva sé
+# stessa su V6 ("risolto" in alto, "parziale" in coda) e sul difetto TUI
+# ("aperto — BLOCCANTE" in una riga, "ritirato" in quella subito dopo).
+# Un controllo automatico al push rende la divergenza visibile subito.
 #
-# L'issue non si modifica a mano. Per cambiarla: si modifica
-# `wayfinder/bb-autonomous-flow/MAP-ISSUE.md` e si esegue
-# `infra/bounty-sandbox/sync-map-issue.sh push`.
+# L'issue si aggiorna con: infra/bounty-sandbox/sync-map-issue.sh push
+# Non si modifica a mano.
 
 on:
   push:
     paths:
-      - 'wayfinder/bb-autonomous-flow/MAP-ISSUE.md'
+      - 'wayfinder/bb-autonomous-flow/MAP.md'
       - 'infra/bounty-sandbox/sync-map-issue.sh'
       - '.github/workflows/map-issue-sync.yml'
   workflow_dispatch:
 
 jobs:
   check:
-    name: l'issue #2 punta alla MAP e non la duplica
+    name: la MAP locale e l'issue #2 coincidono
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Il puntatore dell'issue porta al file giusto
+      - name: Il corpo dell'issue contiene esattamente MAP.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE: '2'
         run: |
           set -euo pipefail
-          BODY="wayfinder/bb-autonomous-flow/MAP-ISSUE.md"
+          MAP="wayfinder/bb-autonomous-flow/MAP.md"
 
           if ! gh issue view "$ISSUE" >/dev/null 2>&1; then
             echo "::warning::issue #$ISSUE non accessibile, controllo saltato"
@@ -47,42 +45,64 @@ jobs:
 
           # `-B`: GitHub aggiunge una newline finale al corpo, senza questa
           # opzione il diff segnalerebbe sempre un'ultima riga vuota.
-          if diff -q -B "$BODY" /tmp/issue-body.md >/dev/null; then
-            echo "ok: il corpo dell'issue e' identico a $BODY"
+          if diff -q -B "$MAP" /tmp/issue-body.md >/dev/null; then
+            echo "ok: l'issue #$ISSUE contiene esattamente $MAP ($(wc -l < "$MAP") righe)"
           else
-            echo "::error::l'issue #$ISSUE DIVERGE da $BODY"
+            echo "::error::l'issue #$ISSUE NON coincide con $MAP"
             echo "Correggi con: infra/bounty-sandbox/sync-map-issue.sh push"
-            diff -B "$BODY" /tmp/issue-body.md | head -40 || true
+            echo "--- differenze (prime 40 righe) ---"
+            diff -B "$MAP" /tmp/issue-body.md | head -40 || true
             exit 1
           fi
 
-      - name: Il link nel corpo punta a un file che esiste, su un branch che esiste
+      - name: La MAP non si contraddice da sola
         run: |
           set -euo pipefail
-          BODY="wayfinder/bb-autonomous-flow/MAP-ISSUE.md"
           MAP="wayfinder/bb-autonomous-flow/MAP.md"
-          BRANCH="${GITHUB_REF_NAME}"
+          errori=0
 
-          # Il link deve nominare il branch su cui siamo: su un branch morto
-          # apre una 404 e l'issue torna a essere un testo senza fonte.
-          if ! grep -q "blob/$BRANCH/wayfinder/bb-autonomous-flow/MAP.md" "$BODY"; then
-            echo "::error::il link in $BODY non punta al branch corrente ($BRANCH)"
+          # V6 non può essere dichiarato risolto da una parte e parziale
+          # dall'altra: era esattamente la contraddizione trovata in audit.
+          if grep -q 'risolto dal container' "$MAP"; then
+            echo "::error::V6 e' ancora dichiarato 'risolto dal container' da qualche parte"
+            errori=$((errori + 1))
+          fi
+
+          # Un difetto ritirato non può comparire anche come aperto/bloccante.
+          if grep -q '~~\[Difetto: TUI vuoto' "$MAP" \
+             && grep -qE 'Difetto: TUI vuoto nel container\]\(tickets/[^)]*\): \*\*APERTO' "$MAP"; then
+            echo "::error::il difetto TUI e' sia ritirato sia aperto nella stessa MAP"
+            errori=$((errori + 1))
+          fi
+
+          # bb hunt non esiste: la MAP non deve parlarne come se esistesse
+          # senza registrarne la mancanza.
+          if grep -q 'cyberstrike bb hunt' "$MAP" \
+             && ! grep -qE 'bb hunt.{0,40}(NON ESISTE|non esiste)' "$MAP"; then
+            echo "::error::la MAP parla di bb hunt senza registrarne la mancanza"
+            errori=$((errori + 1))
+          fi
+
+          if [ "$errori" -gt 0 ]; then
+            echo "$errori contraddizioni interne"
             exit 1
           fi
-          [ -f "$MAP" ] || { echo "::error::$MAP non esiste"; exit 1; }
-          echo "ok: il link punta a $MAP su $BRANCH"
+          echo "ok: nessuna contraddizione interna rilevata"
 
-      - name: L'issue non duplica la MAP
+      - name: I ticket citati nella MAP esistono
         run: |
           set -euo pipefail
-          BODY="wayfinder/bb-autonomous-flow/MAP-ISSUE.md"
           MAP="wayfinder/bb-autonomous-flow/MAP.md"
-          # Se il corpo dell'issue ricominciasse a contenere le sezioni della
-          # MAP, saremmo tornati alle due copie. Una sezione intera, e non un
-          # titolo sparso, vale come duplicazione.
-          if grep -qE '^## (Destination|Stato reale|Notes|Decisions so far|Verifica — arretrati)' "$BODY"; then
-            echo "::error::il corpo dell'issue contiene sezioni della MAP: sono di nuovo due copie"
-            echo "Togli dalla MAP-ISSUE.md le sezioni e lascia solo il puntatore e l'indice."
+          BASE="wayfinder/bb-autonomous-flow"
+          rotti=0
+          while read -r t; do
+            if [ ! -f "$BASE/$t" ]; then
+              echo "::error::la MAP cita $t che non esiste"
+              rotti=$((rotti + 1))
+            fi
+          done < <(grep -o 'tickets/[a-z0-9-]*\.md' "$MAP" | sort -u)
+          if [ "$rotti" -gt 0 ]; then
+            echo "$rotti link rotti nella MAP"
             exit 1
           fi
-          echo "ok: l'issue non duplica la MAP (MAP: $(wc -l < "$MAP") righe, issue: $(wc -l < "$BODY") righe)"
+          echo "ok: tutti i ticket citati esistono"
