@@ -145,3 +145,56 @@ da quello interattivo.
 La causa nel TUI **non e' isolata**. Il difetto e' definitivamente nel TUI, ma
 non so ancora se e' un difetto del prodotto o una condizione del mio ambiente di
 misura (PTY sintetica, dimensione, focus, `TERM`). Non lo dichiaro risolto.
+
+## Verifica indipendente deleg_72cd22d1 — l'ipotesi OSC era SBAGLIATA
+
+Il subagent ha eseguito tutto da solo e ha smontato la mia teoria. Riporto le
+parti che mi riguardano, perche' mi costano due convinzioni:
+
+1. **Le query OSC non spiegano il difetto.** I timeout sono hard-coded a 300ms
+   (`detectOSCSupport`) e 1200ms (`queryPalette`/`querySpecialColors`, in
+   `Promise.all`). Io invio a 9.2s: fuori da quelle finestre. La teoria era
+   plausibile e sbagliata.
+2. **La logica di `--settle` e' indiretta.** Misura il silenzio su stdout, non
+   attende la fine degli handler OSC. Conclusione legittima ma non quella che
+   avevo scritto.
+
+Cosa regge, con prove eseguibili:
+
+| prova | esito |
+|---|---|
+| stesso harness, `cat` in raw mode | `b'ABCDEFGH'` — trasporto OK |
+| TUI in PTY, input da tastiera | `chiave_a_schermo=False` |
+| TUI in PTY, `--prompt 'rispondi OK'` | **entra**, schermo a 26 righe |
+| TUI con stdin piped | entra e viene processato |
+
+Quindi: difetto del TUI, non del mio harness. Il canale dei byte funziona; quello
+dell'input interattivo no.
+
+## Secondo difetto, diverso da #14: nessun endpoint con tool use
+
+Il subagent ha stampato, e io non l'avevo notato:
+
+```
+No endpoints found that support tool use...
+```
+
+Non viene dal repo (cercato in tutti i sorgenti: zero occorrenze), ma da una
+dipendenza. Lo segnalo perche' e' un blocker distinto da #14: se il modello non
+dichiara supporto tool, il ciclo dell'agente non parte anche se l'input
+entrasse.
+
+La config locale (`~/.config/cyberstrike/cyberstrike.json`, mode 600) punta a
+OmniRoute su `192.168.49.84:20128/v1`, che risponde `HTTP 401` in 19ms: il server
+e' vivo, l'autenticazione e' il punto. Ma il TUI mostrava provider
+`OpenRouter` e modelli tipo `DeepSeek V4.1 Flash` / `Nano Banana Pro Preview`,
+cioe' **non quello configurato**. Provider cablato: ancora aperto.
+
+## Stato finale di #14
+
+**Il sintomo e' spiegato ma il difetto non e' risolto.** L'input da tastiera
+non arriva in PTY sintetica; `--prompt` e stdin piped funzionano. Non ho ancora
+isolato *perche'* solo l'interattivo fallisce, e non ho ancora un test in cui la
+risposta del modello venga **resa a schermo** — il criterio di chiusura che
+avevo fissato. Finche' la discovery dei tool endpoint non e' risolta, quel test
+non puo' passare: prima va chiusa.
