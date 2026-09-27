@@ -58,8 +58,10 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
     let totalDiff = ""
 
     for (const hunk of hunks) {
-      const filePath = path.resolve(Instance.directory, hunk.path)
-      await assertExternalDirectory(ctx, filePath)
+      // path REALE: `path.resolve` normalizza i `..` ma NON segue i symlink,
+      // quindi da solo lascerebbe passare la scrittura fuori perimetro
+      // il path REALE: `path.resolve` normalizza i `..` ma NON segue i symlink
+      const filePath = (await assertExternalDirectory(ctx, path.resolve(Instance.directory, hunk.path))) ?? path.resolve(Instance.directory, hunk.path)
 
       switch (hunk.type) {
         case "add": {

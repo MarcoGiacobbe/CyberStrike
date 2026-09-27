@@ -41,8 +41,10 @@ export const EditTool = Tool.define("edit", {
       throw new Error("No changes to apply: oldString and newString are identical.")
     }
 
-    const filePath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
-    await assertExternalDirectory(ctx, filePath)
+    const requested = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
+    // path REALE: perimetro e scrittura sullo stesso path (no TOCTOU)
+    // il path REALE: controllo e scrittura devono riguardare lo stesso inode
+    const filePath = (await assertExternalDirectory(ctx, requested)) ?? requested
 
     let diff = ""
     let contentOld = ""

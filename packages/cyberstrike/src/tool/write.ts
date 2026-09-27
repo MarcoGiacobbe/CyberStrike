@@ -23,8 +23,12 @@ export const WriteTool = Tool.define("write", {
     filePath: z.string().describe("The absolute path to the file to write (must be absolute, not relative)"),
   }),
   async execute(params, ctx) {
-    const filepath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
-    await assertExternalDirectory(ctx, filepath)
+    const requested = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
+    // il path REALE: con un symlink, il perimetro va confrontato e la
+    // scrittura eseguita sullo stesso path, altrimenti il controllo e la
+    // scrittura riguardano due file diversi (TOCTOU)
+    // il path REALE: controllo e scrittura devono riguardare lo stesso inode
+    const filepath = (await assertExternalDirectory(ctx, requested)) ?? requested
 
     const file = Bun.file(filepath)
     const exists = await file.exists()
