@@ -314,3 +314,104 @@ Il test `bash.test.ts` che asseriva il vecchio comportamento è stato riscritto.
 - Attrito reale di `bash` in un hunting vero (quante conferme si ricevono)
 - E2E con `bb hunt` completo: il comando non esiste ancora
 - Nessun contenimento a livello kernel (dichiarato sopra)
+
+## V11 (2026-09-27) — NON PASSA. Il buco reale non e' quello dichiarato.
+
+Due subagent in parallelo (`deleg_37d605ce`). Il primo accende il container e
+prova; il secondo verifica il codice e scrive i criteri anti-verde-falso. Il
+secondo ha prodotto la parte piu' utile: **quattro criteri** per distinguere un
+blocco vero da un verde falso.
+
+### Cosa ha trovato il test sul container (subagent 1, 15 API call, 432s)
+
+| path | esito | risposta |
+|---|---|---|
+| `/etc` | negato | `Permission denied`, stato 1 |
+| `/root` | negato | `EACCES: permission denied` |
+| `~/.ssh` (home del container) | **SCRITTO** | stato 0, file creato, recuperato con `docker cp`, 15 byte |
+
+Il subagent ha correttamente notato che l'errore su `/etc` e `/root` e' un
+`EACCES` da utente non privilegiato, **non** un confine: quei path non sono
+protetti da niente, sono solo inaccessibili a `hunter`.
+
+### Il ritrovamento che il subagent ha mancato
+
+Il mount e' `-v "$BB_ROOT":/work/bugbounty:rw`. E dentro `BB_ROOT` ci sono i
+file di **tutti** i programmi, non solo di quello in caccia:
+
+```
+~/.cyberstrike/bugbounty/
+  credentials.json      600   marco(1000)   <- credenziali di TUTTI i programmi
+  bcny.json             664
+  smoketest.json        664
+  bookingcom.json       664
+  programs/             <- bcny E bcny-test insieme
+```
+
+`credentials.json` e' dentro un mount in lettura-scrittura, e il file e' del
+proprietario del mount. Quindi l'agente che lavora su `bcny` puo' **leggere e
+riscrivere le credenziali degli altri programmi** — inclusi programmi che non
+gli sono stati assegnati. Il perimetro applicato da `bb hunt` copre
+`programs/bcny/`, ma il mount non copre `BB_ROOT/`.
+
+Non e' un escape dal container: e' **una fuga laterale fra programmi**. Per un
+workflow bug bounty e' la piu' grave delle due, perche' un programma ne puo'
+leggere le credenziali di un altro.
+
+### Cosa coprirebbe davvero
+
+Non `--read-only`: quello renderebbe il container inutilizzabile (il TUI scrive
+in `/home/hunter/.local` e in `/work`). Il giusto e' **montare piu' directory
+strettamente invece di una larga**:
+
+- `/work/bugbounty/programs/<programma>` -> rw (serve per il lavoro)
+- `/work/bugbounty` -> ro, o niente
+- `credentials.json` -> mai montato; e sufficiente montare solo
+  `<programma>.json`, `<programma>.accounts.json` e `<programma>.policy.md`
+
+Questo e' incompatibile con l'attuale `bb hunt`, che risolve i config dalla
+root perche' ne conosce il nome a runtime. Da rifare in modo esplicito.
+
+### Stato dei criteri anti-verde-falso (subagent 2, 12 API call, 277s)
+
+Quattro criteri, il piu' importante e' il secondo:
+
+1. usare i tool CyberStrike, non `touch` di sistema;
+2. **controllo positivo dentro il progetto**: se il tool non riesce a scrivere
+   nemmeno dentro, il test non prova niente — altrimenti un tool rotto passa
+   per sicuro;
+3. annotare tool, path effettivo ed esito (deny / ask / eseguito): un `EACCES`
+   e' un blocco del sistema operativo, non del perimetro;
+4. controllare il path **dentro** il container e la destinazione **sull'host**:
+   un canary assente solo nel path sbagliato non prova niente.
+
+Il criterio 2 e' quello che mancava al test di sopra: nessuna scrittura di
+controllo dentro il progetma. Senza, "nessun file fuori" e' indistinguibile da
+"nessun file scritto".
+
+### Altre vie aperte, dal codice (subagent 2, non ancora testate)
+
+- **symlink**: `assertExternalDirectory` usa `Instance.containsPath` **senza
+  canonicalizzare** (`external-directory.ts:17`). Un symlink dentro il progetto
+  che punta a `/etc` passa il controllo e la scrittura segue il link.
+  `apply_patch` normalizza `..` con `path.resolve` ma non segue i symlink.
+- **TOCTOU**: nessuna protezione atomica fra controllo e scrittura in `write.ts:27`,
+  `edit.ts:45` e `apply_patch.ts:62`.
+- **path dinamici in bash**: `$HOME`, `$TMPDIR`, command substitution finiscono
+  in `bash_unresolved` e **chiedono conferma, non negano**
+  (`bash.ts:296-308`). E `bash -c` e gli script sono opachi → chiedono conferma.
+- **`~` non e' espanso dai tool file**: `~/.ssh/x` viene unito alla directory
+  del progetto (`write.ts:26`), quindi il modello crede di scrivere in home e
+  scrive in progetto.
+
+### Verdetto
+
+**V11 non passa.** Non per `/etc` o `/root` (che non sono mai stati protetti),
+ma per due motivi veri:
+
+1. la home del container e' scrivibile, quindi il "fuori" esiste ed e' usabile;
+2. `BB_ROOT` e' montata in `rw` e contiene le credenziali di **tutti** i
+   programmi: fuga laterale fra programmi, piu' grave del rischio di scrittura
+   arbitraria per un workflow bounty.
+
+Nessuna modifica ai file, container di prova rimosso, 0 residui.
