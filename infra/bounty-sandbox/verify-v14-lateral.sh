@@ -66,6 +66,18 @@ if ! grep -q "### dentro il container ###" <<<"$out"; then
   exit 1
 fi
 
+# --- I KO DEL PROBE CONTANO. Il probe esce con 1 se trova un KO, ma da solo
+# --- l'exit code non distingue "trovata una fuga" da "il probe e' crashato":
+# --- quindi si controlla anche il testo. Senza questo, un montaggio largo
+# --- stampava sei KO e V14 chiudeva lo stesso con PASS (riprodotto).
+if grep -q '^ *KO ' <<<"$out"; then
+  echo "  KO  il probe ha trovato problemi DENTRO il container:"
+  grep '^ *KO ' <<<"$out" | sed 's/^/      /'
+  FAIL=1
+else
+  echo "  ok  il probe non ha trovato nulla di anomalo dentro il container"
+fi
+
 echo "-- verifica dall'HOST (l'agente non puo' falsificare questa) --"
 if [ -f "$BB/programs/$PROG/v14-positivo-"* ] 2>/dev/null || compgen -G "$BB/programs/$PROG/v14-positivo-*" >/dev/null; then
   echo "  ok  il file positivo esiste sull'host:"

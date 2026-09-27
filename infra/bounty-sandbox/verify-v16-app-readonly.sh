@@ -41,6 +41,19 @@ out=$(timeout 180 bash "$HERE/run-sandbox.sh" --program "$PROG" \
   ' 2>&1)
 rc=$?
 echo "$out" | grep -E '^(SCRITTO|NEGATO):' | sed 's/^/  /'
+# Il rc NON era controllato: catturato e mai usato. Un launcher che stampa le
+# tre righe NEGATO e poi esce con 42 faceva passare il test. Un KO che esce 0
+# o un crash che esce !=0 sono esiti diversi, quindi si richiede rc == 0
+# E le tre righe attese.
+if [ "$rc" -ne 0 ]; then
+  echo "  KO  il launcher e' uscito con rc=$rc: il perimetro non e' stato provato"
+  tail -3 <<<"$out" | sed 's/^/      /'
+  FAIL=1
+fi
+if [ "$(grep -cE '^NEGATO:' <<<"$out")" -ne 3 ]; then
+  echo "  KO  attesi 3 NEGATO, trovati $(grep -cE '^NEGATO:' <<<"$out"): la prova e' incompleta"
+  FAIL=1
+fi
 if ! grep -qE '^(SCRITTO|NEGATO):' <<<"$out"; then
   echo "  KO  il container non ha girato: il test non misura niente"
   tail -3 <<<"$out" | sed 's/^/      /'
@@ -74,6 +87,33 @@ if ! git -C "$REPO" diff --quiet -- packages/cyberstrike/src/index.ts packages/c
 else
   echo "  ok  i sorgenti sono identici a HEAD"
 fi
+
+# --- 1b. CONTROLLO POSITIVO: il probe sa scrivere? -------------------------
+# Senza questo, V16 puo' essere verde perche' il probe e' semplicemente rotto
+# o perche' il mount del programma e' sparito: "non ha scritto" e "non puo'
+# scrivere" sono esiti diversi. Il revisore lo segnalò come difetto.
+echo "-- test 1b: CONTROLLO POSITIVO, la scrittura DENTRO programs/$PROG funziona --"
+outp=$(timeout 180 bash "$HERE/run-sandbox.sh" --program "$PROG" \
+  test -c '
+    T=".v16-positivo-$$"
+    D="/work/bugbounty/programs/'"$PROG"'"
+    if echo POSITIVO-OK > "$D/$T" 2>/dev/null; then
+      echo "POSITIVO: scritto dentro"; rm -f "$D/$T"
+    else
+      echo "POSITIVO: NEGATO, il tool non sa scrivere nella sua area"
+    fi
+  ' 2>&1)
+rcp=$?
+echo "$outp" | grep -E '^POSITIVO:' | sed 's/^/  /'
+if [ "$rcp" -ne 0 ]; then echo "  KO  il launcher e' uscito con rc=$rcp"; FAIL=1; fi
+if grep -q '^POSITIVO: scritto dentro' <<<"$outp"; then
+  echo "  ok  il probe sa scrivere dove deve: il divieto di /app non e' un blocco totale"
+else
+  echo "  KO  CONTROLLO POSITIVO FALLITO: il test 1 non misura niente"
+  tail -2 <<<"$outp" | sed 's/^/      /'
+  FAIL=1
+fi
+echo
 
 # --- 2. il flusso deve continuare a FUNZIONARE --------------------------
 echo "-- test 2: bb hunt --dry-run funziona ancora (CONTROLLO DI REGRESSIONE) --"
