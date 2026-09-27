@@ -277,6 +277,16 @@ case "$MODE" in
   test)        TTY_ARGS=() ;;
 esac
 
+# /app e' il CODICE (perimetro, tool, gate) e va in sola lettura: se
+# l'agente puo' scriverci, puo' disattivare i propri controlli e la sessione
+# diventa auto-certificata. Misurato il 2026-09-27: con `rw` una scrittura
+# in packages/cyberstrike/src/index.ts persistava sul checkout dell'host.
+# `ro` non rompe nulla: misurato che `bb hunt --dry-run` completa (messaggio,
+# perimetro, stato) e che il TUI parte. Tutto cio' che CyberStrike deve
+# persistere gia' vive nei volumi (share, config, state), non in /app.
+# NB: il commento sta QUI e non accanto al `-v` perche' una riga commentata
+# dentro una sequenza con `\` tronca la continuazione e `docker run` riceve
+# il solo `-v` come argomento ("requires at least 1 argument").
 docker run "${TTY_ARGS[@]}" --rm --name "$NAME" \
   "${PASS_ENV[@]}" \
   -e CS_CMD="$CS_CMD" \
@@ -286,7 +296,7 @@ docker run "${TTY_ARGS[@]}" --rm --name "$NAME" \
   --memory=2g \
   --shm-size=1g \
   --network bridge \
-  -v "$REPO":/app:rw \
+  -v "$REPO":/app:ro \
   ${BB_MOUNTS[@]+"${BB_MOUNTS[@]}"} \
   -v "$VOL_SHARE":/home/hunter/.local:rw \
   -v "$VOL_CFG":/home/hunter/.config/cyberstrike:rw \
