@@ -169,3 +169,102 @@ elenco separato di soli nomi, senza i file.
 3. **Controllo negativo fra programmi:** scrivere in `programs/bcny-test/` deve
    fallire e sull'host il file non deve comparire; `docker inspect` non deve
    mostrare un mount piu' ampio di `programs/`.
+
+## Chiusura 2026-09-27 — montati i mount stretti
+
+`run-sandbox.sh` accetta `--program <nome>`. Con quel flag monta SOLO:
+
+- `programs/<nome>` in `rw` (e' il progetto, la sola scrivibile)
+- `<nome>.json`, `<nome>.accounts.json`, `<nome>.policy.md` in `ro`
+
+**La root `bugbounty/` NON viene montata.** Quindi `credentials.json` non
+esiste dentro il container, e nessun altro programma e' visibile. Non e' una
+negazione: e' assenza, quindi non e' nemmeno leggibile.
+
+Il nome viene validato con `case "$PROGRAM" in *[!a-z0-9_-]*)` PRIMA di
+costruire qualsiasi path e prima di toccare docker (riga ~45). Senza quel
+controllo `--program ../../etc` avrebbe trasformato il "mount stretto" in un
+mount della root: misurato, i tre attacchi (`../../etc`, `bcny/../..`,
+`BCNY`) vengono tutti rifiutati con exit 2.
+
+### Test
+
+- `verify-v14-lateral.sh` + `verify-v14-probe.sh` — **PASS**. Copre:
+  credenziali assenti, config altrui assente, un solo programma montato,
+  scrittura dentro (controllo positivo, verificato poi dall'host col contenuto),
+  scrittura nell'altro programma negata dal filesystem.
+  **Controprova:** riportando il mount a largo il test va rosso per la ragione
+  giusta — credenziali presenti, 2 programmi montati, e la **fuga arriva
+  davvero sull'host** (`v14-fuga-1.txt`). Il controllo positivo resta verde
+  in entrambi i casi, quindi il test misura il perimetro e non il fatto che il
+  filesystem sia rotto.
+- `verify-v15-bb-hunt.sh` — **PASS**. Non e' una prova di sicurezza ma di non
+  regressione: `bb hunt <prog> --dry-run` deve stampare messaggio, perimetro e
+  stato. Controprova: senza il ramo `bb` va rosso.
+
+### Difetto trovato durante la verifica (era MIO, non preesistente)
+
+Il launcher non aveva un ramo per `bb`: `run "bb hunt ..."` finiva in
+`... src/index.ts run "$CS_CMD"`, cioe' dentro una **sessione LLM** che leggeva
+il sorgente invece di eseguire il comando. Sintomo: `--dry-run` non stampava
+MAI `=== MESSAGGIO INIZIALE ===`, e il fallimento sembrava del perimetro.
+Corretto con `MODE=bb`. Nota: `bb` da solo e' il TUI, quindi il comando
+ricostruito e' `bb` + sottocomando, non il solo sottocomando.
+
+### Ancora aperto
+
+- `bb list` dentro il container mostra solo il programma montato. Non e' un
+  bug: l'elenco completo non e' un dato disponibile dentro il confine, e va
+  detto invece di fingere. Da rivedere come UX (es. `--program` gia' noto).
+- `/app` e' montato `rw`: l'agente puo' scrivere nel proprio codice. PREESISTENTE
+  (ticket separato, `/app` read-only).
+
+## Secondo giro — revisione avversariale deleg_5f2afbf8 (3 difetti, 1 preesistente)
+
+Il primo giro era verde ma non chiuso. La revisione avversariale ha trovato
+tre difetti reali, tutti RIPRODOTTI DA ME prima di correggere (i riassunti dei
+subagent sono auto-dichiarazioni: li ho rievocati con esecuzione reale).
+
+**1. `programs/<nome>` symlink verso l'esterno — CRITICO**
+`docker -v` segue i symlink. Con `programs/bcny -> /tmp/altrove`, il segreto di
+/tmp/altrove era LEGGIBILE dal container. La validazione del nome non lo
+copre: copre i caratteri, non la DESTINAZIONE del path.
+
+**2. `<nome>.json` -> `credentials.json` — CRITICO**
+Il config del programma montato `ro` era un link alle credenziali: contenuto
+del segreto uscito dal "mount stretto" senza alcun errore. Peggio: il mio
+primo tentativo di fix NON lo chiudeva, perche' `realpath` segue il link e
+restituisce un path legittimo DENTRO la base — quindi passava. Misurato: ho
+dovuto passare a `-L`, che rifiuta il link senza seguirlo.
+
+**3. Fallback `CYBERSTRIKE_PROGRAM` letto e poi azzerato**
+`PROGRAM` era inizializzato a riga 38 dalla variabile e resettato a `""` poco
+dopo: il fallback era morto. `CYBERSTRIKE_PROGRAM=bcny` avviava il container
+con ZERO mount pur stampando un perimetro, e `bb hunt` diceva "Programma non
+sincronizzato". Corretto: onorare il fallback e' la direzione RESTRITTIVA
+(senza programma non si monta nulla), quindi non indebolisce il confine.
+
+**Preesistente, NON introdotto qui:** `/app:rw` (tutto il codice sorgente
+montato in scrittura) gia' era a HEAD. Un processo nel container puo' quindi
+alterare perimetro, tool e gate. Rischio reale: verificato che una scrittura
+in `packages/cyberstrike/src/index.ts` persiste sul checkout dell'host. Non
+annulla il test di isolamento di BB_ROOT, ma rende il codice dell'agente
+mutabile durante la sessione. Ticket separato, NON chiuso qui.
+
+### Difetti dei miei test, trovati durante la controprova
+
+- **V15 non rilevava il mount largo**: controllava il TESTO statico stampato
+  dal launcher ("NON montati"), non cosa fosse davvero montato. Con il launcher
+  mutante dava PASS. V15 e' un controllo FUNZIONALE, non una controprova di
+  isolamento. Riprogettato per guardare il perimetro effettivamente applicato.
+- **Sentinella che si auto-matchava**: la mia stringa sentinella conteneva la
+  parola "RIFIUTO", quindi il `grep` di successione la ri-trovava dentro se
+  stessa e validava un caso in realta ACCETTATO. Il test diceva PASS stampando
+  la prova del difetto. Risolto con una sentinella neutra; da solo ha reso
+  la controprova V14b onesta (V14 FAIL col launcher mutante).
+
+### Controprova V14b (quella che conta)
+- fix: `no_symlink` + `resolve_inside` -> entrambi i casi rifiutati, PASS
+- launcher mutato (`no_symlink` disattivato) -> `KO link2: ACCETTATO`, FAIL
+- `link1` resta rifiutato anche senza `no_symlink`: lo salva `resolve_inside`.
+  Le due difese sono complementari, nessuna delle due basta da sola.
