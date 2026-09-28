@@ -61,6 +61,16 @@ export const BountyStatusTool = Tool.define<z.ZodObject<{ refresh: z.ZodOptional
     const derived = BountyState.derive(dir)
     const divergences = BountyState.divergences(info, derived)
 
+    // Uno stato che contraddice l'evidenza BLOCCA la sessione, non avvisa.
+    // Questo e' il requisito del ticket `stato-progetto`: finche' i numeri
+    // dichiarati non tornano con i fatti derivati dal DB, l'agente non deve
+    // poter pianificare su di essi. Con `refresh: true` la divergenza non
+    // puo' sopravvivere (load() ri-deriva e riscrive), quindi il caso
+    // bloccante e' solo quello di una lettura non ri-derivata.
+    if (divergences.length > 0 && params.refresh === false) {
+      BountyState.markBlocked(ctx.sessionID, divergences)
+    }
+
     const lines = [
       `Program: ${field(info.program)}`,
       `Phase:   ${info.phase} (set ${field(info.phaseUpdatedAt)})`,

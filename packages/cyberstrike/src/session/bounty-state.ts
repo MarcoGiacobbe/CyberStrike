@@ -613,6 +613,44 @@ export namespace BountyState {
   }
 
   /**
+   * Ragioni per cui la sessione è bloccata: lo stato dichiarato contraddice i
+   * fatti derivati dall'evidenza (vedi `divergences`). Vive in `Instance.state`
+   * come `loadedFlag`, quindi è per-sessione e si azzera al riavvio.
+   *
+   * Il gate di `todowrite` consulta questo insieme a `loaded`: caricare uno
+   * stato che mente non autorizza a pianificare. Un blocco non è un errore
+   * transitorio — si sblocca ri-derivando (`bounty_status --refresh true`,
+   * che riscrive lo stato dai fatti) e non con un nuovo load a stato fermo.
+   */
+  const blockedFlag = Instance.state(() => {
+    const map = new Map<string, string[]>()
+    return map
+  })
+
+  /** Blocca la sessione elencando le divergenze rilevate. */
+  export function markBlocked(sessionID: string, reasons: string[]): void {
+    blockedFlag().set(sessionID, [...reasons])
+    // Lo stato caricato non autorizza più: toglierlo evita che un `loaded`
+    // residuo da una lettura precedente tenga aperto il gate.
+    loadedFlag().delete(sessionID)
+  }
+
+  /** Motivi del blocco; array vuoto se la sessione non è bloccata. */
+  export function blocked(sessionID: string): string[] {
+    return blockedFlag().get(sessionID) ?? []
+  }
+
+  /** true se la sessione è bloccata da una divergenza. */
+  export function isBlocked(sessionID: string): boolean {
+    return blockedFlag().has(sessionID)
+  }
+
+  /** Sblocca la sessione (usato da `load()`, che ri-deriva e risolve). */
+  export function clearBlocked(sessionID: string): void {
+    blockedFlag().delete(sessionID)
+  }
+
+  /**
    * Carica lo stato (derivando i fatti) e segna la sessione come "stato letto".
    * È il punto in cui il gate di `todowrite` si sblocca.
    *
@@ -622,6 +660,10 @@ export namespace BountyState {
    */
   export function load(sessionID: string, dir: string, program?: string): Info {
     const info = refresh(dir, program)
+    // `load` ri-deriva dai fatti e riscrive: qualunque divergenza dichiarata in
+    // precedenza è per costruzione risolta, quindi la sessione non resta
+    // bloccata. Un blocco che sopravvivesse qui sarebbe un vicolo cieco.
+    clearBlocked(sessionID)
     markLoaded(sessionID)
     log.info("bounty state loaded", { directory: dir, program: info.program, targets: info.targets.length })
     return info

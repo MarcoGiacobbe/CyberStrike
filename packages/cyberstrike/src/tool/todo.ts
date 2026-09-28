@@ -16,6 +16,18 @@ import { Instance } from "../project/instance"
 // directory di lavoro non è un progetto bounty.
 function gate(dir: string, sessionID: string): string | undefined {
   if (!isHuntingProject(dir)) return undefined
+  // Uno stato che contraddice l'evidenza non autorizza a pianificare: il gate
+  // resta chiuso finche' non si ri-deriva. Caricare non basta, e' stato
+  // caricato ED coerente con i fatti che conta.
+  const reasons = BountyState.blocked(sessionID)
+  if (reasons.length > 0) {
+    return (
+      "Questo progetto di bug bounty ha uno stato che contraddice l'evidenza registrata, " +
+      `in ${reasons.length} punto/i: ${reasons.slice(0, 3).join("; ")}. ` +
+      "Non puoi pianificare su cifre che il sistema ha già dichiarato non verificate. " +
+      "Risolvi con `bounty_status` con refresh attivo: ri-deriva lo stato dai fatti e ti sblocca."
+    )
+  }
   if (BountyState.loaded(sessionID)) return undefined
   return (
     "Questo è un progetto di bug bounty: prima di pianificare devi caricare lo stato attuale, " +

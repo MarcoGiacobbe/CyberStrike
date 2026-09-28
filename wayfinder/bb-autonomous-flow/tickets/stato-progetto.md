@@ -63,6 +63,78 @@ Se lo stato dichiarato è disallineato dai fatti che il sistema conosce (es.
 l'agente dichiara di aver testato X ma non c'è traccia di richieste su X):
 **la sessione si blocca finché non si risincronizza il programma.**
 
+### Implementato il 2026-09-28 (review avversariale `deleg_49381b00`)
+
+Fino al 28/09 la riga 64 sopra era **decisa ma non implementata**: la divergenza
+veniva mostrata come avviso e la sessione restava sbloccata. Misurato, non
+dedotto.
+
+**Difetto riprodotto** (`test/tool/bounty-divergence-blocks.test.ts`):
+`readChecked()` chiama `markLoaded()` a `bounty-status.ts:131` **prima** che
+`divergences()` venga valutato alla riga 62. Quindi uno stato che dichiara 3
+target con zero evidenza sbloccava `todowrite`:
+
+```
+Expected: false
+Received: true        <- BountyState.loaded(sid) su stato che mente
+```
+
+A `HEAD` il test è rosso su quella riga; col fix è verde. Il test è la prova,
+non parte del fix.
+
+**Fix** — un blocco meccanico, non un messaggio:
+- `BountyState`: nuovo `blockedFlag` in `Instance.state` (per-sessione,
+  azzerato al riavvio) con `markBlocked/blocked/isBlocked/clearBlocked`.
+  `markBlocked` rimuove anche il flag `loaded`: uno `loaded` residuo da una
+  lettura precedente non deve tenere aperto il gate.
+- `bounty_status`: in `refresh: false`, divergenze > 0 ⇒ `markBlocked`.
+  Con `refresh: true` non può accadere: `load()` ri-deriva e riscrive.
+- `load()` chiama `clearBlocked`: ri-derivare risolve per costruzione, altrimenti
+  il blocco sarebbe un vicolo cieco.
+- `todo.ts`: il gate consulta `blocked` **prima** di `loaded`. Caricare non
+  basta: conta stato caricato *ed* coerente con i fatti.
+
+**Verificato anche** (`bounty-divergence-unblock.test.ts`): il blocco si
+riapre — `refresh: true` → 0 divergenze → sbloccato → `todowrite` torna a
+funzionare; ed è per-sessione (una sessione nuova non eredita il blocco, ma
+neanche risulta sbloccata: deve caricare a sua volta).
+
+**Perché `refresh: false` è il caso bloccante e non `refresh: true`**: con
+`refresh: true` `load()` ri-deriva dai fatti e riscrive, quindi la divergenza non
+sopravvive per costruzione — non è una scelta di comodità, è l'unico punto in cui
+uno stato fermo può mentire.
+
+## Difetti ANCORA APERTI (stessa review, non affrontati)
+
+**P1 — una coverage note arbitraria diventa un fatto** (`coverage-note.ts:6–21`).
+Il tool accetta asset e nota forniti dall'agente senza richiedere un request
+ID, un'observation o altra prova tecnica; `derive()` considera la sola riga DB
+come prova sufficiente. Riprodotto dalla review: nota dichiarata priva di
+observation, `request_id` assente, accettata; ne è derivato il target
+`never-contacted.invalid`. **Non risolto**: richiede una decisione su quale
+evidenza sia minima accettabile.
+
+**P1 — prova falsa nei campi `sessions`/`lastSeen` non rilevata**
+(`bounty-state.ts:491–525`): `divergences()` confronta il *numero* delle
+sessioni e `firstSeen`, ma non gli ID effettivi né `lastSeen`. Misurato dalla
+review con `Info.safeParse(...).success === true` e `divergences() === []` a
+parità di host e conteggio, con ID inventato e data 1999. **Non risolto**.
+
+**Nota**: la review non ha verificato l'accettazione di quello stato tramite
+`bounty_status` in un setup DB separato; il gap di confronto è misurato nel
+codice, il percorso completo no. Da rifare prima di chiudere.
+
+**E1 è chiuso**: `bb.ts:702–715` chiama `diagnose()`, verifica `isSafe()` e
+costruisce le regole; `bb hunt bcny --dry-run` reale → `regole: 9` con
+`deny edit *`. La MAP era stale su questo punto.
+
+**Gap di inizializzazione**: `bb hunt` legge lo stato (`bb.ts:691–695`) ma non
+chiama `create/load/refresh`; `create()` non ha chiamanti di produzione
+individuati, e `setPhase()`/`regenerate()` risultano senza chiamanti. Lo stato
+iniziale nasce solo se l'agente chiama `bounty_status`; il dry-run reale mostra
+`nessuno stato (progetto nuovo)`. Nessun `state.json` esiste oggi sui programmi
+reali. **Non risolto** — è il prossimo ostacolo alla chiusura.
+
 ## Da decidere
 
 1. Forma dello stato: `state.json` con schema versionato (chi lo valida? zod?
