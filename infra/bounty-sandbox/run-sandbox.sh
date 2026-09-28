@@ -118,6 +118,9 @@ echo "  env passati al container: ${#PASS_ENV[@]} (nomi: ${PASS_ENV[*]:-nessuno}
 ARGS=()
 CS_CMD=""
 MODE="tui"
+# `--keep`: riusa il container esistente invece di avviarne uno nuovo. V14 e V16
+# chiamano run-sandbox.sh 3 volte ciascuno: senza questo, 6 container di fila.
+KEEP=0
 # `PROGRAM` NON viene azzerato qui: riga 38 lo inizializza da
 # `CYBERSTRIKE_PROGRAM`, e azzerarlo rendeva morta la variabile — il
 # fallback era letto e poi scartato, quindi `CYBERSTRIKE_PROGRAM=bcny` senza
@@ -125,6 +128,17 @@ MODE="tui"
 # Misurato il 2026-09-27. Onorarla non indebolisce il confine: mount
 # STRETTI sono la direzione restrittiva, e senza programma non se ne monta
 # nessuno. Il nome arriva gia' validato dal controllo in cima.
+
+# --keep riusa il container invece di avviarne uno nuovo. Senza questo, i test
+# che chiamano run-sandbox.sh piu' volte (V14 e V16 lo fanno 3 volte ciascuno)
+# avviano 6 container di fila: ~800MB di TUI ciascuno e il repo da 5.4GB
+# rimontato ogni volta, per un risultato identico. Misurato il 2026-09-28.
+# Il riuso e' esplicito e mai silenzioso: se il container esiste gia' ma con
+# un programma DIVERSO, i mount non corrisponderebbero: si rifiuta invece di mentire.
+while [ "${1:-}" = "--keep" ]; do
+  shift || true
+  KEEP=1
+done
 
 # --program va estratto PRIMA di interpretare il resto: il nome determina i
 # mount. Il nome e' gia' stato validato in cima (subito dopo le variabili),
@@ -287,7 +301,145 @@ esac
 # NB: il commento sta QUI e non accanto al `-v` perche' una riga commentata
 # dentro una sequenza con `\` tronca la continuazione e `docker run` riceve
 # il solo `-v` come argomento ("requires at least 1 argument").
-docker run "${TTY_ARGS[@]}" --rm --name "$NAME" \
+
+# --- RIUSO DEL CONTAINER (--keep) -----------------------------------------
+# Problema misurato il 2026-09-28: V14 e V16 chiamano questo script 3 volte
+# ciascuno. Ogni chiamata avviava un `docker run` da zero: 6 container di fila,
+# ~800MB di TUI ciascuno, con il repo da 5.4GB rimontato ogni volta, per
+# arrivare allo stesso risultato. Il costo e' stato pagato, il beneficio no.
+#
+# Con `--keep` il container viene avviato UNA volta, detached e vivo, e ogni
+# invocazione successiva entra con `docker exec`. Stessi mount, stesso
+# comando, stesso risultato: cambia solo quanto costa arrivarci.
+# La stringa interna usa il segnaposto `@@CS_CMD@@` al posto di `$CS_CMD`:
+# dentro single quote `$CS_CMD` resterebbe LETTERALE (il ramo `test` eseguirebbe
+# una variabile vuota e il comando non girerebbe — misurato il 2026-09-28).
+# Il segnaposto viene sostituito in un secondo momento, quando il valore e'
+# noto: cosi' il quoting non si annida e resta leggibile.
+INNER_SCRIPT='cd /app
+    [ -d node_modules ] || bun install --frozen-lockfile
+    export CYBERSTRIKE_HOME=/work
+    case "@@MODE@@" in
+      test)        exec /bin/bash -c "$CS_CMD" ;;
+      shell)       exec /bin/bash ;;
+      cyberstrike) exec bun run --cwd packages/cyberstrike src/index.ts run "$CS_CMD" ;;
+      bb)          exec bun run --cwd packages/cyberstrike src/index.ts $CS_CMD ;;
+      tui)         exec bun run dev ;;
+    esac'
+# Solo `@@MODE@@` viene sostituito qui. `CS_CMD` NON viene interpolato nella
+# stringa: arriva al container come variabile d'ambiente (`-e CS_CMD`) e li'
+# viene letto con `"$CS_CMD"`. La sostituzione testuale era una trappola:
+# in `${var//pat/rep}` il `&` dentro `rep` significa "tutto cio' che ha
+# matched pat", quindi un comando con `&&` diventava
+# `@@CS_CMD@@@@CS_CMD@@` e i `&&` sparivano; con `2>/dev/null` il
+# `>&` veniva mangiato e il comando eseguito era diverso da quello scritto
+# (misurato il 2026-09-28, due volte: prima sparivano gli `&&`, poi i `&` dei
+# redirect). L'env evita l'intera classe di problemi.
+INNER_SCRIPT=${INNER_SCRIPT//@@MODE@@/$MODE}
+
+if [ "$KEEP" = "1" ]; then
+  # CONTROLO 1 — il container esiste ed e' eseguibile. Riusare un container
+  # fermo o rotto produrrebbe un test che sembra passare e non misura nulla.
+  if [ -n "$(docker ps -q --filter "name=^/${NAME}$")" ]; then
+    if ! docker exec "$NAME" true 2>/dev/null; then
+      echo "RIFIUTO: '$NAME' esiste ma non e' eseguibile. Rimuovilo: docker rm -f $NAME" >&2
+      exit 2
+    fi
+    # CONTROLO 2 — i mount sono scelti all'avvio e NON cambiano con `exec`.
+    # Un container avviato per un programma diverso darebbe un verde bugiardo.
+    # La fonte di verita' sono i mount reali del container, non un file: un
+    # file di marcatore nella directory del programma verrebbe scritto
+    # dall'host (sporcando il programma dell'utente) e potrebbe essere
+    # assente o obsoleto. `docker inspect` non mente su cosa e' montato.
+    #
+    # NB: vanno controllate SORGENTE *E* DESTINAZIONE. Controllando solo la
+    # destinazione, un container montato da una directory arbitraria con lo
+    # stesso nome di programma passava il controllo e il test leggeva il
+    # contenuto sbagliato (`WRONG_SOURCE`) con rc=0. Misurato il 2026-09-28
+    # dalla review avversariale e riprodotto.
+    if [ -n "$PROGRAM" ]; then
+      _want_src="$BB_ROOT/programs/$PROGRAM"
+      if ! docker inspect -f '{{range .Mounts}}{{println .Source " " .Destination}}{{end}}' "$NAME" 2>/dev/null \
+           | awk -v s="$_want_src" -v d="/work/bugbounty/programs/$PROGRAM" \
+                 '$1==s && $2==d { found=1 } END { exit !found }'; then
+        echo "RIFIUTO: '$NAME' NON ha il mount $BB_ROOT/programs/$PROGRAM" >&2
+        echo "        (i mount sono scelti all'avvio e non cambiano con exec):" >&2
+        docker inspect -f '{{range .Mounts}}{{println "          " .Source " -> " .Destination}}{{end}}' "$NAME" 2>/dev/null >&2
+        echo "        Ripulisci e riavvia:  docker rm -f $NAME" >&2
+        exit 2
+      fi
+    elif ! docker inspect -f '{{range .Mounts}}{{println .Destination}}{{end}}' "$NAME" 2>/dev/null \
+           | grep -qx '/work/bugbounty/programs'; then
+      # Senza `--program` il montaggio del perimetro non e' verificabile, ma
+      # il container non deve comunque prestare i suoi mount a una sessione
+      # che non li ha chiesti. Misurato il 2026-09-28: senza `--program` il
+      # controllo non girava affatto e veniva letto comunque il contenuto
+      # del programma montato.
+      echo "RIFIUTO: '$NAME' e' riusato senza --program: i suoi mount non sono" >&2
+      echo "        quelli della sessione richiesta. Riavvia con --program." >&2
+      exit 2
+    fi
+    # Azzera il contatore di inattivita' del container riusato: senza questo
+    # il ciclo di auto-terminazione lo ucciderebbe a meta' di un test lento.
+    # Se il touch fallisce, il file NON viene aggiornato: e' la direzione
+    # sicura, perche' un container che muore e' ricostruibile, mentre un
+    # marker falso lo lascerebbe vivo per sempre.
+    docker exec -i "$NAME" sh -c ': > /tmp/.keep-alive' 2>/dev/null || true
+    exec docker exec -i \
+      ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
+      -e CS_CMD="$CS_CMD" \
+      "$NAME" /bin/bash -lc "$INNER_SCRIPT"
+  fi
+  # Non esiste (o e' fermo): si rimuove e si avvia pulito, UNA volta sola.
+  # Poi si entra SUBITO con `exec` per eseguire il comando: `docker run -d`
+  # avvia e ritorna subito, quindi senza questa seconda invocazione il
+  # comando non girerebbe mai e il test would dire "PASS" senza aver
+  # misurato niente (misurato il 2026-09-28: output vuoto, solo l'hash del
+  # container restituito da `docker run`).
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+fi
+
+# Con --keep il container sopravvive: resta vivo con `sleep infinity` e le
+# invocazioni successive ci entrano con `exec`. Senza, `--rm` lo butta a ogni
+# avvio, ed e' il comportamento normale di caccia.
+if [ "$KEEP" = "1" ]; then
+  RUN_FLAGS=(-d)
+  # Il container riusato non e' un `sleep infinity` muto: e' un ciclo che
+  # esce da SOLO se nessuno lo usa da `KEEP_IDLE_SEC` secondi. Motivo
+  # (misurato il 2026-09-28): nessun trap e nessun watchdog in userspace
+  # garantisce la rimozione di un container se chi lo ha avviato viene
+  # ucciso con SIGKILL — il padre resta zombie e `kill -0` mente. Con
+  # l'auto-terminazione, anche l'interruzione piu' brutala lascia il
+  # container vivo per AL PIU' `KEEP_IDLE_SEC`, poi muore da solo.
+  #
+  # Il contatore di inattivita' e' un file in /tmp del container: ogni `exec`
+  # di questo script lo azzera. Se nessuno lo tocca per KEEP_IDLE_SEC, il
+  # ciclo esce. Non usa `date` per non dipendere dal clock del container.
+  KEEP_CMD='exec /bin/bash -lc '"'"'
+    MARK=/tmp/.keep-alive
+    : > "$MARK"
+    while true; do
+      sleep 5
+      now=$(date +%s)
+      last=$(stat -c %Y "$MARK" 2>/dev/null || echo 0)
+      [ $(( now - last )) -ge 900 ] && exit 0
+    done
+  '"'"''
+  KEEP_IDLE_SEC=900
+  # `docker run -d -t` e' rifiutato dal daemon. In `--keep` un TTY non serve:
+  # il comando gira con `docker exec -i`. Meglio dirlo che lasciarlo fallire
+  # con un errore di docker che sembrerebbe un problema del perimetro.
+  if [ -n "${TTY_ARGS[*]:-}" ]; then
+    echo "RIFIUTO: --keep non e' compatibile con una modalita' TTY ($MODE)." >&2
+    echo "        Con --keep il comando gira in background e si entra con exec." >&2
+    exit 2
+  fi
+else
+  RUN_FLAGS=(--rm)
+  KEEP_CMD="$INNER_SCRIPT"
+fi
+
+docker run "${TTY_ARGS[@]}" "${RUN_FLAGS[@]}" --name "$NAME" \
   "${PASS_ENV[@]}" \
   -e CS_CMD="$CS_CMD" \
   --cap-drop=ALL \
@@ -302,14 +454,16 @@ docker run "${TTY_ARGS[@]}" --rm --name "$NAME" \
   -v "$VOL_CFG":/home/hunter/.config/cyberstrike:rw \
   -w /app \
   "$IMAGE" \
-  /bin/bash -lc '
-    cd /app
-    [ -d node_modules ] || bun install --frozen-lockfile
-    export CYBERSTRIKE_HOME=/work
-    case "'"$MODE"'" in
-      test)        exec /bin/bash -c "$CS_CMD" ;;
-      shell)       exec /bin/bash ;;
-      cyberstrike) exec bun run --cwd packages/cyberstrike src/index.ts run "$CS_CMD" ;;
-      bb)          exec bun run --cwd packages/cyberstrike src/index.ts $CS_CMD ;;
-      tui)         exec bun run dev ;;
-    esac'
+  /bin/bash -lc "$KEEP_CMD"
+rc_run=$?
+# `docker run` senza --keep e' il percorso normale: il comando e' gia' eseguito
+# e il suo exit code e' quello della sessione.
+[ "$KEEP" = "1" ] || exit "$rc_run"
+
+# --- --keep: il container e' avviato e vivo, il comando non e' ancora partito.
+# Il `docker run -d` qui sopra ha solo acceso il container (con `sleep
+# infinity`): senza questo `exec` il comando non verrebbe mai eseguito e chi
+# chiama qui sotto riceverebbe un successo fasullo. Misurato il 2026-09-28.
+exec docker exec -i \
+  -e CS_CMD="$CS_CMD" \
+  "$NAME" /bin/bash -lc "$INNER_SCRIPT"

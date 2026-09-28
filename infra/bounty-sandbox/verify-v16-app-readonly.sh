@@ -20,6 +20,35 @@
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PROG="${1:-bcny}"
 REPO="$(cd "$HERE/../.." && pwd)"
+# Container DEDICATO a questo test, con un nome suo. Senza, `--keep` riuserebbe
+# (o sfreggerebbe contro) il container `cyberstrike-bounty` della caccia, che
+# va lasciato intatto. E il trap qui sotto garantisce che il container venga
+# INTERROTTO alla fine — riuso o no, riuscita o fallimento (regola del progetto:
+# `--rm` non basta, lo stop deve essere esplicito).
+KEEP_NAME="cyberstrike-v16-$$"
+# Il riuso (`--keep`) funziona SOLO se il nome e' stabile fra le invocazioni
+# dentro lo stesso test. Con `$$` nel nome ogni esecuzione del test ha un nome
+# diverso e il riuso non puo' mai scattare: misurato, 3 invocazioni davano 3
+# container. Il nome cambia a ogni ESECUZIONE del test, non a ogni invocazione
+# interna: `$$` resta giusto per non collidere con altri test in parallelo, e
+# le tre invocazioni di questo file condividono la stessa shell, quindi lo
+# stesso `$$`.
+export CYBERSTRIKE_SANDBOX_NAME="$KEEP_NAME"
+
+# --- CLEANUP ---------------------------------------------------------------
+# Misurato il 2026-09-28 (review avversariale + riproduzione): `trap cleanup
+# TERM` NON basta — in bash il trap del chiamante non gira mentre un `docker
+# exec` e' in foreground, e su SIGTERM il container restava vivo. Un watchdog
+# in userspace NON e' una soluzione: uccidendo il padre questo resta zombie e
+# `kill -0` continua a dire "vivo" (misurato), quindi il watchdog non spara.
+# Nessun processo utente puo' garantire la pulizia dopo un SIGKILL.
+#
+# La leva che resta e' `docker stop`: uccide i processi DENTRO il container,
+# indipendentemente da chi lo ha avviato. Per questo il container riusato non
+# e' un `sleep infinity` muto, ma un ciclo che esce da solo se nessuno lo usa:
+# vedi `KEEP_WATCHDOG_SEC` in run-sandbox.sh.
+cleanup() { docker rm -f "$KEEP_NAME" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
 
 echo "=== V16: /app in sola lettura (programma=$PROG) ==="
 
@@ -33,7 +62,7 @@ FAIL=0
 
 # --- 1. il codice deve essere NEGATO -------------------------------------
 echo "-- test 1: scrittura nel codice NEGATA --"
-out=$(timeout 180 bash "$HERE/run-sandbox.sh" --program "$PROG" \
+out=$(timeout 180 bash "$HERE/run-sandbox.sh" --keep --program "$PROG" \
   test -c '
     for f in /app/PROVA_V16 /app/packages/cyberstrike/src/index.ts /app/packages/cyberstrike/package.json; do
       if echo SCRIVI >> "$f" 2>/dev/null; then echo "SCRITTO: $f"; else echo "NEGATO: $f"; fi
@@ -93,7 +122,7 @@ fi
 # o perche' il mount del programma e' sparito: "non ha scritto" e "non puo'
 # scrivere" sono esiti diversi. Il revisore lo segnalò come difetto.
 echo "-- test 1b: CONTROLLO POSITIVO, la scrittura DENTRO programs/$PROG funziona --"
-outp=$(timeout 180 bash "$HERE/run-sandbox.sh" --program "$PROG" \
+outp=$(timeout 180 bash "$HERE/run-sandbox.sh" --keep --program "$PROG" \
   test -c '
     T=".v16-positivo-$$"
     D="/work/bugbounty/programs/'"$PROG"'"
@@ -117,7 +146,7 @@ echo
 
 # --- 2. il flusso deve continuare a FUNZIONARE --------------------------
 echo "-- test 2: bb hunt --dry-run funziona ancora (CONTROLLO DI REGRESSIONE) --"
-o=$(timeout 250 bash "$HERE/run-sandbox.sh" --program "$PROG" \
+o=$(timeout 250 bash "$HERE/run-sandbox.sh" --keep --program "$PROG" \
   bb hunt "$PROG" --dry-run 2>&1)
 if grep -q "=== MESSAGGIO INIZIALE ===" <<<"$o" \
    && grep -q "=== PERIMETRO ===" <<<"$o" \

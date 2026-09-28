@@ -21,9 +21,23 @@ BB="${CYBERSTRIKE_HOME:-$HOME/.cyberstrike}/bugbounty"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAME="cs-v14-$$"
 FAIL=0
-
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+# Il container di questo test ha un nome suo, non `cyberstrike-bounty`: quello
+# e' della caccia e va lasciato intatto. `run-sandbox.sh` legge il nome da
+# `CYBERSTRIKE_SANDBOX_NAME`.
+export CYBERSTRIKE_SANDBOX_NAME="$NAME"
+cleanup() {
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  # I marker del probe non devono restare nella directory del programma: sono
+  # spazzatura di test dentro i dati della caccia, e un residuo puo' falsificare
+  # il run successivo (vedi la pulizia pre-probe sopra).
+  rm -f "$BB/programs/$PROG/"/v14-positivo-* 2>/dev/null || true
+  rm -f "$BB/programs/$ALTRO/"/v14-fuga-* 2>/dev/null || true
+}
 trap cleanup EXIT
+# Come in V16: `trap cleanup INT`/`TERM` da soli non terminano lo script in
+# bash, quindi il container sopravvive al segnale. Serve l'`exit` esplicito.
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 echo "=== V14: fuga laterale fra programmi (programma=$PROG, altro=$ALTRO) ==="
 
@@ -53,7 +67,15 @@ fi
 # nulla, falso verde) ne env (`compgen -v` elenca le variabili di SHELL, non
 # quelle d'ambiente: inoltrare env da questo launcher fallisce in silenzio).
 # La riga di comando con argomenti normali e' l'unico canale affidabile.
-out=$(timeout 180 bash "$HERE/run-sandbox.sh" --program "$PROG" \
+# PRIMA del probe si cancellano TUTTI i marker di qualunque run precedente:
+# il probe rimuove solo il proprio (il suo nome ha `$$`), e il controllo qui
+# sotto cerca con un glob che matcha QUALSIASI `v14-positivo-*`. Senza questa
+# pulizia un residuo renderebbe PASS un mount che in realta' e' in sola
+# lettura: e' lo stesso falso verde chiuso in V14/V16, ricomparso perche' il
+# test era diventato multi-run.
+rm -f "$BB/programs/$PROG/"/v14-positivo-* 2>/dev/null || true
+rm -f "$BB/programs/$ALTRO/"/v14-fuga-* 2>/dev/null || true
+out=$(timeout 180 bash "$HERE/run-sandbox.sh" --keep --program "$PROG" \
   test -c "bash /app/infra/bounty-sandbox/verify-v14-probe.sh $PROG $ALTRO" 2>&1)
 rc=$?
 echo "$out"
@@ -79,7 +101,7 @@ else
 fi
 
 echo "-- verifica dall'HOST (l'agente non puo' falsificare questa) --"
-if [ -f "$BB/programs/$PROG/v14-positivo-"* ] 2>/dev/null || compgen -G "$BB/programs/$PROG/v14-positivo-*" >/dev/null; then
+if compgen -G "$BB/programs/$PROG/v14-positivo-*" >/dev/null; then
   echo "  ok  il file positivo esiste sull'host:"
   ls -1 "$BB/programs/$PROG/" | grep 'v14-positivo' | sed 's/^/    /'
   cat "$BB/programs/$PROG/"v14-positivo-* 2>/dev/null | sed 's/^/    contenuto: /'

@@ -208,3 +208,15 @@ Il perimetro autorizzava ma la scrittura finiva in un altro programma: il gate
 restituiva una stringa, quel nome veniva riaperto dopo. Corretto aprendo
 l'handle prima del gate con `O_NOFOLLOW`, cosi' il kernel rifiuta il symlink.
 Test permanente rosso a HEAD, verde col fix. `toctou-gate-scrittura.md`
+
+## Riuso del container nei test — CHIUSO
+`run-sandbox.sh` ha `--keep`: riusa il container invece di avviarne uno nuovo.
+Misurato, 4 invocazioni sullo stesso programma: 1 container con `--keep`, 4
+senza. V14 e V16 lo usano con trap di cleanup. Chiuso anche un falso verde in
+V14: il marker di un run precedente falsificava il test successivo.
+`riuso-container-test.md`
+
+## Regole fondamentali
+Vedi `REGOLE-FONDAMENTALI.md`, in cima a questo file. Non negoziabili: mai
+container su container, stop esplicito alla fine di ogni test, massimo 1-2
+sessioni, controllo memoria prima di partire.
