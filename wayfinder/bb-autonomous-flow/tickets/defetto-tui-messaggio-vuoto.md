@@ -1,7 +1,15 @@
 # Ticket: il TUI funziona dentro il container — la diagnosi precedente era sbagliata
 
-Stato: **APERTO (2026-09-26)** — il TUI si apre, il difetto è a valle.
-Ultimo commit al momento della stesura: `404d18130`.
+Stato: **SOSPESO (2026-09-28)** — decisione utente: *"quello non mi usciva piu
+stamattina. per ora secondo me è da ignorare"*. Non è più il blocco attivo; il
+lavoro riparte dagli altri ticket. Da riaprire se il vuoto ricompare.
+
+Resta vero e utile: il TUI si apre, il difetto è a valle (invio -> sessione ->
+prima risposta provider -> render), e quel passaggio non era mai stato
+misurato. Nota: il crash del browser nel container chiuso il 2026-09-28
+(`597d46431`) era la precondizione per misurarlo, perché l'agente bounty è un
+agente browser e senza Chromium la risposta del provider non poteva arrivare a
+schermo.
 
 ## Cosa dice l'utente (fatto, non ipotesi)
 
