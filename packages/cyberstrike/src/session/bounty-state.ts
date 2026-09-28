@@ -514,12 +514,45 @@ export namespace BountyState {
     for (const t of info.targets) {
       const d = byHost.get(t.host)
       if (!d) continue
-      if (t.sessions.length !== d.sessions.length)
+      // Gli ID delle sessioni si confrontano come INSIEME, non come sequenza:
+      // il fatto e' "quali sessioni hanno toccato questo target", non "in che
+      // ordine sono arrivate". Confronto per lunghezza soltanto accettava un
+      // `sessions: ["ses_fabbricato"]` al posto di `["ses_reale"]`: stesso
+      // numero, contenuto falso.
+      //
+      // Nessun `continue` qui: i confronti restano INDIPENDENTI. Un target puo'
+      // mentire su piu' campi insieme, e accoppiare i controlli (prima versione
+      // di questo fix) nascondeva il `firstSeen` falso dietro l'errore sulle
+      // sessioni — il test P12 se ne accorgeva solo sul secondo campo.
+      const dichiarate = new Set(t.sessions)
+      const reali = new Set(d.sessions)
+      const falseId = [...dichiarate].find((s) => !reali.has(s))
+      if (falseId) {
+        // Il numero resta nel messaggio perche' un test preesistente (P12)
+        // asserisce proprio la forma "N sessioni": e la forma e' utile — un
+        // lettore che vede solo il conteggio capisce subito di che divergenza
+        // si tratta. L'ID resta, perche' il numero da solo non dice QUALE
+        // sessione e' falsa.
         out.push(
-          `target ${t.host}: stato dichiara ${t.sessions.length} sessioni, l'evidenza ne mostra ${d.sessions.length}`,
+          `target ${t.host}: stato dichiara ${t.sessions.length} sessioni, l'evidenza ne mostra ${d.sessions.length}; ` +
+            `la sessione ${falseId} non e' nell'evidenza`,
         )
+      }
+      const mancanti = [...reali].find((s) => !dichiarate.has(s))
+      if (mancanti) {
+        out.push(
+          `target ${t.host}: l'evidenza mostra ${d.sessions.length} sessioni, lo stato ne dichiara ${t.sessions.length}; ` +
+            `manca la sessione ${mancanti}`,
+        )
+      }
       if (t.firstSeen !== d.firstSeen)
         out.push(`target ${t.host}: stato dichiara firstSeen ${t.firstSeen}, l'evidenza mostra ${d.firstSeen}`)
+      // `lastSeen` era il campo lasciato fuori: una data del 1999 passava come
+      // conforme. Se l'evidenza e' piu' recente dello stato dichiarato, lo
+      // stato mente per omissione — "l'ultimo contatto e' stato il" e' un fatto
+      // tanto quanto "il primo".
+      if (t.lastSeen !== d.lastSeen)
+        out.push(`target ${t.host}: stato dichiara lastSeen ${t.lastSeen}, l'evidenza mostra ${d.lastSeen}`)
     }
 
     return out
