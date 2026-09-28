@@ -192,3 +192,9 @@ Ancora da mettere a posto:
   silenzio e V6/V12 restano non misurabili.
 - `Not yet specified` → i due punti già annotati (target toccato, promozione
   note) restano aperti e sono collegati a `stato-progetto`.
+
+## TOCTOU fra gate e scrittura — CHIUSO
+Il perimetro autorizzava ma la scrittura finiva in un altro programma: il gate
+restituiva una stringa, quel nome veniva riaperto dopo. Corretto aprendo
+l'handle prima del gate con `O_NOFOLLOW`, cosi' il kernel rifiuta il symlink.
+Test permanente rosso a HEAD, verde col fix. `toctou-gate-scrittura.md`

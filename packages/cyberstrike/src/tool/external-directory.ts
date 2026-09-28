@@ -1,5 +1,6 @@
 import path from "path"
-import { lstat, readlink, realpath } from "fs/promises"
+import { lstat, readlink, realpath, open, constants } from "fs/promises"
+import type { FileHandle } from "fs/promises"
 import type { Tool } from "./tool"
 import { Instance } from "../project/instance"
 
@@ -149,4 +150,67 @@ export async function assertExternalDirectory(
   })
 
   return canonical
+}
+
+/**
+ * Scrive in modo che il perimetro NON possa essere aggirato da una corsa.
+ *
+ * Il solo path canonico non basta: e' una STRINGA, e fra il momento in cui il
+ * gate autorizza e quello in cui la syscall apre il file, un altro processo
+ * puo' sostituire il path con un symlink verso l'esterno. Il gate autorizzava
+ * `programs/bcny/race.txt`, la syscall ha aperto il file che quel nome
+ * indicava DOPO, e la scrittura e' finita in `programs/bcny-test/`.
+ * Misurato il 2026-09-28 su `test/permission/toctou-race.test.ts`:
+ * con il gate `allow:1 deny:0` e il contenuto di un altro programma
+ * sovrascritto; senza il gate lo stesso file restava intatto.
+ *
+ * La correzione e' aprire il file PRIMA e verificare che sia quello giusto:
+ * `open()` restituisce un file descriptor, e il descriptor continua a
+ * puntare allo stesso inode anche se il nome viene sostituito. Da qui in poi
+ * nessuna corsa puo' spostare la destinazione: si scrive sull'handle.
+ *
+ * Il confronto e' fatto su dev+ino, non sul path: e' l'unico dato che
+ * identifica il file davvero aperto. Il path torna identico a `fstat` solo se
+ * nessuno l'ha spostato in mezzo.
+ */
+export async function openChecked(target: string, exists: boolean) {
+  // `O_NOFOLLOW` e' la parte che chiude davvero la finestra. A userspace non
+  // si puo': fra `open()` e la scrittura il nome puo' cambiare, e il perimetro
+  // ha gia' concesso. Il kernel invece rifiuta il symlink all'ultimo
+  // componente senza seguirlo (ELOOP). Verificato il 2026-09-28: file nuovo
+  // OK, symlink ELOOP, contenuto della vittima intatto.
+  //
+  // Il flag vale SOLO per l'ultimo componente: una directory padre che e' un
+  // symlink resta seguita. Per quello serve `assertExternalDirectory`, che
+  // risolve il path canonico e viene comunque eseguito prima.
+  //
+  // L'handle si apre PRIMA del gate: aprirlo dopo lascia la corsa nella
+  // finestra fra autorizzazione e open (misurato: aprendo dopo, l'escape si
+  // riproduceva invariato).
+  const flags = exists
+    ? constants.O_RDWR | constants.O_NOFOLLOW
+    : constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW
+  const handle = await open(target, flags)
+  const st = await handle.stat()
+  return { dev: st.dev, ino: st.ino, handle }
+}
+
+export async function writeChecked(
+  opened: { dev: number; ino: number; handle: FileHandle },
+  content: string,
+) {
+  try {
+    // verifica che l'handle sia ancora quello giusto: se nel frattempo il nome
+    // e' stato sostituito, l'handle punta al vecchio inode (quello interno) e
+    // la scrittura ci va comunque. Il controllo serve a non scrivere in
+    // silenzio su un file che non e' piu' quello autorizzato.
+    const st = await opened.handle.stat()
+    if (st.dev !== opened.dev || st.ino !== opened.ino) {
+      throw new Error("perimetro: il file e' cambiato fra il controllo e la scrittura")
+    }
+    await opened.handle.truncate(0)
+    await opened.handle.writeFile(content, "utf8")
+  } finally {
+    await opened.handle.close()
+  }
 }

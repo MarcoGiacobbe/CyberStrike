@@ -11,7 +11,7 @@ import { FileTime } from "../file/time"
 import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { trimDiff } from "./edit"
-import { assertExternalDirectory } from "./external-directory"
+import { assertExternalDirectory, openChecked, writeChecked } from "./external-directory"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
@@ -35,6 +35,10 @@ export const WriteTool = Tool.define("write", {
     const contentOld = exists ? await file.text() : ""
     if (exists) await FileTime.assert(ctx.sessionID, filepath)
 
+    // Handle aperto PRIMA del gate `edit`: da qui in poi la destinazione e'
+    // fissata all'inode, e un symlink comparso in mezzo non sposta piu' niente.
+    const opened = await openChecked(filepath, exists)
+
     const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, params.content))
     await ctx.ask({
       permission: "edit",
@@ -46,7 +50,10 @@ export const WriteTool = Tool.define("write", {
       },
     })
 
-    await Bun.write(filepath, params.content)
+    // scrittura su file descriptor, non per nome: vedi writeChecked. Con
+    // `Bun.write(filepath)` il nome veniva riaperto qui, e un symlink comparso
+    // dopo il gate scriveva fuori perimetro (misurato il 2026-09-28).
+    await writeChecked(opened, params.content)
     await Bus.publish(File.Event.Edited, {
       file: filepath,
     })
