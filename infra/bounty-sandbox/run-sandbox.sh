@@ -450,12 +450,40 @@ docker run "${TTY_ARGS[@]}" "${RUN_FLAGS[@]}" --name "$NAME" \
   --network bridge \
   -v "$REPO":/app:ro \
   ${BB_MOUNTS[@]+"${BB_MOUNTS[@]}"} \
-  -v "$VOL_SHARE":/home/hunter/.local:rw \
-  -v "$VOL_CFG":/home/hunter/.config/cyberstrike:rw \
+  -v "$VOL_SHARE":/home/hunter/csdata:rw \
+  -v "$VOL_CFG":/home/hunter/csconfig:rw \
+  -e HOME=/home/hunter \
+  -e XDG_CONFIG_HOME=/home/hunter/csconfig \
+  -e XDG_DATA_HOME=/home/hunter/csdata \
+  -e XDG_CACHE_HOME=/home/hunter/csdata/cache \
+  -e XDG_STATE_HOME=/home/hunter/csdata/state \
   -w /app \
   "$IMAGE" \
   /bin/bash -lc "$KEEP_CMD"
 rc_run=$?
+
+# --- $HOME/.config CREATA DA DOCKER COME ROOT ---------------------------------
+# Misurato il 2026-09-28: `docker run -v VOL_CFG:/home/hunter/.config/cyberstrike`
+# fa creare a DOCKER i padri mancanti, e li crea come ROOT (uid 0):
+#     drwxr-xr-x 3 0 0 4096 /home/hunter/.config
+# mentre il container gira come `hunter` (uid 1000):
+#     mkdir: cannot create directory '/home/hunter/.config/prova': Permission denied
+# Conseguenza reale: Chromium andava in crash con rc=133 e in stderr
+# `chrome_crashpad_handler: --database is required`, perche' crashpad non
+# riusciva a scrivere il suo database in `$HOME/.config`. Sembrava un problema
+# di browser, era un problema di permessi creato dal mount.
+#
+# `chown` NON e' una strada: con `--cap-drop=ALL` si ottiene
+#     chown: changing ownership of '/home/hunter/.config': Operation not permitted
+# neanche da `docker exec -u 0` (misurato). Percio' le XDG sopra puntano
+# dentro `$HOME` gia' esistente e gia' di proprieta' di `hunter`, dove
+# l'utente puo' scrivere, e il path del volume resta quello che il codice si
+# aspetta. xdg-basedir rispetta XDG_CONFIG_HOME/XDG_DATA_HOME, quindi
+# Global.Path.config punta dove deve.
+#
+# Nota: il guard in stealth.ts (mkdir -p $HOME/.config) resta utile ma da solo
+# non basta: su una directory root-owned fallisce con EACCES.
+
 # `docker run` senza --keep e' il percorso normale: il comando e' gia' eseguito
 # e il suo exit code e' quello della sessione.
 [ "$KEEP" = "1" ] || exit "$rc_run"

@@ -1,4 +1,5 @@
-import { existsSync } from "fs"
+import { existsSync, mkdirSync } from "fs"
+import { join } from "path"
 import { chromium, type Browser, type LaunchOptions, type BrowserContextOptions } from "playwright"
 
 const PLATFORM_ARGS =
@@ -20,6 +21,35 @@ const LAUNCH_ARGS = [
   ...PLATFORM_ARGS,
 ]
 
+/**
+ * D PREPARA LA HOME PRIMA DI LANCIARE IL BROWSER.
+ *
+ * Misurato il 2026-09-28 dentro cyberstrike-bounty:sandbox: Chromium andava in
+ * crash con `Trace/breakpoint trap (core dumped)`, rc=133, e in stderr:
+ *   `chrome_crashpad_handler: --database is required`
+ * Causa: `$HOME` era /home/hunter, directory esistente e scrivibile ma VUOTA.
+ * Chromium/crashpad vuole `$HOME/.config` gia' presente e non la crea da solo:
+ * se manca muore all'avvio, prima ancora di aprire una pagina. Non e' un
+ * problema di shm (--disable-dev-shm-usage c'era gia' e non cambia nulla) ne'
+ * di permessi (la home e' scrivibile).
+ *
+ * Il fix e' qui e non nel launcher dello sandbox perche' lo stesso crash si
+ * verifica su qualunque host con una home vuota, non solo in container: se
+ * l'utente lancia `cyberstrike bb hunt` fuori dal container deve funzionare
+ * uguale. `mkdirSync` ricorsivo e' idempotente e non falla se il percorso
+ * esiste gia'.
+ */
+function prepareHome(): void {
+  const home = process.env.HOME
+  if (!home) return // Windows / ambienti senza HOME: Chromium usa altre path
+  try {
+    mkdirSync(join(home, ".config"), { recursive: true })
+  } catch {
+    // Se la home non e' scrivibile non e' un motivo per non lanciare il
+    // browser: si lascia Chromium dire cosa non va invece di fallire qui.
+  }
+}
+
 export function launchOptions(headless: boolean): LaunchOptions {
   // Headful: maximize to the REAL screen instead of forcing a fixed 1920x1080 window, which
   // overflows (and hides the login bar) on any screen smaller than that. Maximized fits every
@@ -29,6 +59,23 @@ export function launchOptions(headless: boolean): LaunchOptions {
   return { headless, args }
 }
 
+/**
+ * NOTA sul profilo del browser: non passare `--user-data-dir` a
+ * `chromium.launch()`. Playwright lo rifiuta esplicitamente (misurato il
+ * 2026-09-28):
+ *   Error: launch: Pass userDataDir parameter to
+ *   'browserType.launchPersistentContext(userDataDir, options)' instead of
+ *   specifying '--user-data-dir' argument
+ * E non si puo' tornare indietro facilmente: `launch()` restituisce un
+ * `Browser`, il profilo persistente si ottiene solo da
+ * `launchPersistentContext()`, che restituisce un `BrowserContext` con firma
+ * diversa. I caller di `connect()` usano `browser.newPage()`, quindi passare
+ * al persistent context cambierebbe il tipo in ogni chiamata.
+ * Conclusione: il default di Playwright va bene. Il crash che si voleva
+ * evitare non era del profilo ma di `$HOME/.config` inesistente o non
+ * scrivibile, e quello si risolve con `prepareHome()` e con il launcher dello
+ * sandbox (che non deve far creare a Docker directory root-owned sotto $HOME).
+ */
 export function findSystemChrome(): string | undefined {
   const candidates =
     process.platform === "darwin"
@@ -44,10 +91,11 @@ export function findSystemChrome(): string | undefined {
 }
 
 export async function connect(opts: { cdp?: string; headless: boolean }): Promise<Browser> {
+  prepareHome()
   if (opts.cdp) return chromium.connectOverCDP(opts.cdp)
+  const base = launchOptions(opts.headless)
   const chrome = findSystemChrome()
-  if (chrome) return chromium.launch({ ...launchOptions(opts.headless), executablePath: chrome })
-  return chromium.launch(launchOptions(opts.headless))
+  return chromium.launch({ ...base, executablePath: chrome })
 }
 
 export function contextOptions(

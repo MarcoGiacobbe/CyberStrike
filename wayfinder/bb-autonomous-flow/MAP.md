@@ -216,6 +216,18 @@ senza. V14 e V16 lo usano con trap di cleanup. Chiuso anche un falso verde in
 V14: il marker di un run precedente falsificava il test successivo.
 `riuso-container-test.md`
 
+## Browser muto dentro il container — CHIUSO
+Chromium crashava con `rc=133` e `chrome_crashpad_handler: --database is
+required`. Non era un problema del browser: `docker run -v VOL:/home/hunter/
+.config/cyberstrike` fa creare a DOCKER il padre `/home/hunter/.config` come
+root, mentre il container gira come `hunter`, quindi Chromium non poteva
+scrivere li'. Isolato per differenza (ogni flag da solo rc=0, XDG da solo
+rc=0, volume da solo rc=0, XDG+volume insieme rc=133). `chown` non rimedia:
+con `--cap-drop=ALL` dà `Operation not permitted`. Fix: i volumi si montano
+alla root delle dir XDG, e `HOME`/`XDG_*` sono espliciti. V17 (nuovo) lancia
+il browser vero nel container: verde col fix, rosso a HEAD. V14 e V16 restano
+verdi. `browser-crash-dentro-sandbox.md`
+
 ## Regole fondamentali
 Vedi `REGOLE-FONDAMENTALI.md`, in cima a questo file. Non negoziabili: mai
 container su container, stop esplicito alla fine di ogni test, massimo 1-2
