@@ -3,6 +3,16 @@
 Tracker: local markdown (fallback per skill wayfinder — coerente col vincolo
 "solo scritture nella directory di lavoro"). Tickets in `tickets/`.
 
+> ## ⚠️ REGOLE FONDAMENTALI — leggere PRIMA di ogni verifica
+> **`REGOLE-FONDAMENTALI.md` in questa cartella.** In sintesi:
+> 1. **MAI container su container** — un probe non lancia il proprio `docker run`,
+>    riusa il container già avviato (`sandbox_exec`).
+> 2. **Al termine di ogni test il container è INTERROTTO** esplicitamente, anche
+>    se il test è fallito.
+> 3. **Prima di avviare, `free -m`**: sotto 2GB liberi non si parte.
+> 4. **Nessun test che non misura niente**: controllo positivo, `rc` usato,
+>    marker rimossi, controprova a `HEAD`.
+
 ## Destination
 
 Dentro cyberstrike, un comando esplicito — `cyberstrike bb hunt <program>`

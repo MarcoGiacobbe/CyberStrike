@@ -7,7 +7,8 @@ import { FileWatcher } from "../file/watcher"
 import { Instance } from "../project/instance"
 import { Patch } from "../patch"
 import { createTwoFilesPatch, diffLines } from "diff"
-import { assertExternalDirectory } from "./external-directory"
+import { assertExternalDirectory, openChecked, writeChecked } from "./external-directory"
+import { existsSync } from "fs"
 import { trimDiff } from "./edit"
 import { LSP } from "../lsp"
 import { Filesystem } from "../util/filesystem"
@@ -118,8 +119,14 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
             if (change.removed) deletions += change.count || 0
           }
 
-          const movePath = hunk.move_path ? path.resolve(Instance.directory, hunk.move_path) : undefined
-          await assertExternalDirectory(ctx, movePath)
+          // Il risultato NON va scartato: `move_path` era validato ma ignorato,
+          // e la scrittura usava il path grezzo. Misurato il 2026-09-28:
+          // il perimetro concedeva (allow:1 deny:0) e il contenuto di un altro
+          // programma (programs/bcny-test/bersaglio.txt) veniva sovrascritto.
+          const movePath = hunk.move_path
+            ? ((await assertExternalDirectory(ctx, path.resolve(Instance.directory, hunk.move_path))) ??
+              path.resolve(Instance.directory, hunk.move_path))
+            : undefined
 
           fileChanges.push({
             filePath,
@@ -208,7 +215,11 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
           if (change.movePath) {
             // Create parent directories (recursive: true is safe on existing/root dirs)
             await fs.mkdir(path.dirname(change.movePath), { recursive: true })
-            await fs.writeFile(change.movePath, change.newContent, "utf-8")
+            // Scrittura su file descriptor, non per nome: `fs.writeFile` riapre
+            // il path e un symlink comparso fra il gate e questa riga scriveva
+            // fuori perimetro. Stessa difesa di write.ts (vedi writeChecked).
+            const opened = await openChecked(change.movePath, existsSync(change.movePath))
+            await writeChecked(opened, change.newContent)
             await fs.unlink(change.filePath)
             updates.push({ file: change.filePath, event: "unlink" })
             updates.push({ file: change.movePath, event: "add" })
