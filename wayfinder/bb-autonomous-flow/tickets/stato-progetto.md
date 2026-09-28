@@ -172,7 +172,58 @@ alias.
 
 typecheck 11/11; suite 956 test 0 fail (5 run consecutivi).
 
-## Da decidere
+## Confronto incompleto dei campi — CHIUSO il 2026-09-28
+
+`divergences()` confrontava `sessions` per **lunghezza** e `lastSeen` **non lo
+confrontava affatto**. Misurato prima del fix, tutte e tre le righe vuote = nessuna
+divergenza, cioè "conforme":
+
+| stato dichiarato | esito a `HEAD` |
+|---|---|
+| `sessions: ["ses_INVENTATO"]` al posto di `["ses_reale"]` | `[]` — conforme |
+| `lastSeen: 1999-01-01` | `[]` — conforme |
+| stesse sessioni in ordine inverso | `[]` — conforme, e giusto |
+
+Il commento nel codice (riga ~510) prometteva già il contrario — *"un `sessions: 40`
+con id inesistenti, o un `firstSeen` che precede ogni evidenza, è altrettanto
+falso"* — quindi era un difetto documentato e tradito, non un'omissione.
+
+**Fix**: gli ID si confrontano come **insieme**, non come sequenza (il fatto è
+"quale sessione ha toccato il target", non "in che ordine è arrivata"), e
+`lastSeen` entra nel confronto. I confronti restano **indipendenti**: la prima
+versione accoppiava i controlli con `continue` e nascondeva un `firstSeen` falso
+dietro l'errore sulle sessioni. Me l'ha segnalato il test **P12**, preesistente,
+che per questo non ho toccato — ho corretto il mio codice invece che il test.
+
+Test `divergence-fields` (5): rosso a `HEAD` (2 fail), verde col fix. Include il
+controllo che l'ordine **non** è un fatto e che uno stato perfettamente conforme
+non produce divergenze.
+
+typecheck 11/11; suite 961 test 0 fail.
+
+## Coverage note — LAVORO FUTURO (non è priorità, utente 2026-09-28)
+
+**Difetto misurato**: una nota che dichiara esplicitamente l'assenza di prove
+viene accettata e il suo host finisce in "Targets touched" come fatto. La prova
+non è simulata, è passata dal tool reale: `note: "NON ho eseguito alcun test.
+Nessuna prova."` → `derive()` restituisce `mai-toccato.example`, `COUNT = 1`.
+Aggiungere un `request_id` non cambia nulla: è una stringa dichiarata
+dall'agente come la nota, quindi non è prova.
+
+**Perché non è chiuso con la scelta "respingi senza prova"**: l'utente l'ha
+scelta, ma verificando l'impianto la prova tecnica **non esiste come dato**.
+`Request.add` ha un solo caller di produzione ed è `session.ingest`, una route
+che accetta un messaggio da chi si connette; `session.request` e
+`session.observations` sono di sola lettura. Non c'è un canale che registri il
+traffico reale del proxy. Costruire il gate su `request_id` oggi produrrebbe
+rigore solo apparente: l'agente riempierebbe anche quel campo, con lo stesso
+difetto di adesso e un'etichetta che promette il contrario.
+
+**Il lavoro futuro è in due tempi**: (1) un canale che registri le richieste
+reali, scritto dal proxy e non da chi dichiara; (2) il gate che lega la nota a
+quella richiesta e respinge senza riscontro. Fino ad allora il difetto resta
+aperto e va ricordato ogni volta che si legge "Targets touched".
+
 
 1. Forma dello stato: `state.json` con schema versionato (chi lo valida? zod?
    chi migra su cambio schema?)
