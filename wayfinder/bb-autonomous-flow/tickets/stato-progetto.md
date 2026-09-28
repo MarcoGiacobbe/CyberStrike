@@ -135,6 +135,43 @@ iniziale nasce solo se l'agente chiama `bounty_status`; il dry-run reale mostra
 `nessuno stato (progetto nuovo)`. Nessun `state.json` esiste oggi sui programmi
 reali. **Non risolto** — è il prossimo ostacolo alla chiusura.
 
+## Gap di inizializzazione — CHIUSO il 2026-09-28
+
+`bb hunt` validava il programma e costruiva il perimetro, ma **leggeva** lo
+stato e non lo creava mai. `BountyState.create()`, `setPhase()` e `regenerate()`
+non avevano **nessun caller** in tutto il codice di produzione, e sui programmi
+reali non esisteva alcun `state.json`. Misurato prima del fix: `ls
+~/.cyberstrike/bugbounty/programs/*/state.json` → nessuno.
+
+Il difetto non è cosmetico: `isHuntingDir()` è il gate che distingue una
+directory di hunting. Senza stato il gate non ha nulla su cui vigilare, e la
+prima sessione parte senza confine. Peggio: lo stato nasceva solo se **l'agente**
+decideva di chiamare `bounty_status` — il confine dipendeva dalla cooperazione
+di chi doveva essere sorvegliato.
+
+**Fix** (`bb.ts`, passo 3): se `state.json` non esiste e non è `--dry-run`, si
+inizializza. Il discriminante è `BountyState.fileExists()`, non
+`instanceof Unreadable`: quell'errore copre due casi diversi ("non c'è ancora
+nessuno stato" = progetto nuovo, e "c'è ma è corrotto"), quindi il **tipo**
+dell'errore non basta. Per "c'è ma è illeggibile" l'errore viene propagato
+(regola B1) e il file non viene sovrascritto.
+
+`exists()` esisteva già ma fa un'altra domanda ("è leggibile", e per un file
+corrotto torna `false`): usarlo per questa decisione avrebbe fatto esattamente
+ciò che il suo commento vieta. Per questo `fileExists()` è un nome nuovo, non un
+alias.
+
+**Misurato end-to-end** (non col test isolato, che da solo non esercita `bb hunt`):
+
+| prova | esito |
+|---|---|
+| `bb hunt probe` reale | `state.json` creato, mode 600, `phase: idle`, `targets: 0`, `derivedAt: null` |
+| `--dry-run` | non scrive nulla |
+| 2° avvio con `phase: reporting`, 1 target | preservati — il lavoro dichiarato non si azzera |
+| `state.json` corrotto | `rc=1`, file **non** sovrascritto, errore propagato |
+
+typecheck 11/11; suite 956 test 0 fail (5 run consecutivi).
+
 ## Da decidere
 
 1. Forma dello stato: `state.json` con schema versionato (chi lo valida? zod?

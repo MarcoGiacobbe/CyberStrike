@@ -689,11 +689,32 @@ export const BBCommand = cmd({
           if (!unsynced && !args.dryRun) fs.mkdirSync(path.join(directory, "program"), { recursive: true })
 
           // 3. Stato: assente in un progetto nuovo, e non è un errore.
+          //    Se e' proprio ASSENTE (non illegibile) e il programma e' valido,
+          //    lo si INIZIALIZZA qui. Motivo misurato il 2026-09-28: `bb hunt`
+          //    leggeva lo stato e basta, `BountyState.create()` non aveva alcun
+          //    caller di produzione, e sui programmi reali non esisteva nessun
+          //    `state.json`. Lo stato nasceva solo se l'AGENTE decideva di
+          //    chiamare `bounty_status` — cioe' il confine dipendeva dalla
+          //    cooperazione di chi doveva essere sorvegliato. Con lo stato
+          //    creato qui, il gate di `todowrite` ha su che vigilare gia' alla
+          //    prima sessione.
+          //    Lo stato ILLEGGIBILE (corrotto) non si sovrascrive: propagare
+          //    l'errore e' il comportamento B1, azzerarlo perderebbe prove.
           let state: BountyState.Info | undefined
           try {
             state = BountyState.read(directory)
-          } catch {
+          } catch (e) {
+            // Un `Unreadable` puo' voler dire due cose: `state.json` non c'e'
+            // (progetto nuovo, normale) oppure c'e' ed e' corrotto. Nel
+            // secondo caso propagare e' la regola B1: sovrascrivere azzererebbe
+            // in silenzio la fase dichiarata. Il discriminante non e' il tipo
+            // dell'errore ma l'ESISTENZA del file.
+            if (BountyState.fileExists(directory)) throw e
             state = undefined
+          }
+          if (!state && !args.dryRun) {
+            state = BountyState.create({ directory, program })
+            BountyState.write(state)
           }
 
           // 4. Il perimetro. È QUI che il confine diventa effettivo: senza

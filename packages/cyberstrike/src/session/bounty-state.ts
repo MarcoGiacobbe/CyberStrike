@@ -607,6 +607,20 @@ export namespace BountyState {
     return loadedFlag().has(sessionID)
   }
 
+  /**
+   * true se il FILE `state.json` esiste, leggibile o no. Serve a chiudere il
+   * caso "assente" senza passare da `instanceof Unreadable`: quell'errore
+   * copre due situazioni diverse — "non c'è ancora nessuno stato" (progetto
+   * nuovo, e un comando deve poter inizializzare) e "c'è ma è illeggibile"
+   * (stato rotto, che va propagato e MAI sovrascritto, per la regola B1).
+   *
+   * Non è `exists()` (quello chiede "è leggibile" e per un file corrotto torna
+   * false: usarlo qui farebbe proprio ciò che il suo commento vieta).
+   */
+  export function fileExists(dir: string): boolean {
+    return presence(dir) !== "absent"
+  }
+
   /** Solo per i test: azzera il flag di una sessione. */
   export function unmarkLoaded(sessionID: string): void {
     loadedFlag().delete(sessionID)
