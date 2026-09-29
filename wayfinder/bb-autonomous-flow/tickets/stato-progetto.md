@@ -268,6 +268,37 @@ Conseguenza per il design: il blocco va implementato come **guardia in
 "stato caricato" è settato dal tool che legge lo stato). Il ruleset resta come
 rinforzo, non come garanzia.
 
+## Fallimento fantasma NON isolato (2026-09-28)
+
+In due esecuzioni non consecutive della suite è comparso `1 fail` senza che il
+test fallito fosse riportato nel `grep`. Dopo il primo episodio: 9 run consecutivi
+puliti; dopo il secondo: 8 run consecutivi puliti. Ogni file di test bounty è
+verde **sia da solo sia in gruppo**, quindi l'ipotesi iniziale (sette file che
+impostano `process.env.CYBERSTRIKE_HOME` a un `mkdtemp` diverso) **non è
+confermata**: `BountyState.root()` legge la variabile a runtime, non all'import.
+
+Non ho la riproduzione, quindi **non attribuisco una causa**. Se ricompare, la
+traccia utile è il nome del test fallito in quella esecuzione, che questa volta
+non ho catturato. Da non confondere con la divergenza su `sessions`/`lastSeen`,
+che invece è misurata e chiusa (`7b5fa1581`) e si riproduce in modo deterministico.
+
+## Stato del ticket: CHIUSO con lavoro futuro
+
+Chiusi in questa sessione, tutti con controprova a `HEAD`:
+
+1. **Divergenza bloccante** (`8cdce8a2a`) — era un avviso, ora blocca la sessione.
+2. **Inizializzazione** (`83f9ca7d4`) — `bb hunt` non creava lo stato; `create()`,
+   `setPhase()` e `regenerate()` non avevano caller.
+3. **Confronto completo dei campi** (`7b5fa1581`) — `sessions` confrontato per
+   lunghezza, `lastSeen` non confrontato.
+
+Rimane **fuori ticket, non è priorità** (deciso dall'utente): la coverage note
+senza prova tecnica diventa un target toccato. Il difetto è misurato e
+documentato, ma non è chiudibile finché non esiste il canale che registra il
+traffico reale. Va ricordato a ogni lettura di "Targets touched".
+
+typecheck 11/11; suite 961 test 0 fail.
+
 ## Risposte alle domande aperte
 
 1. **Forma dello stato**: `state.json` con **schema Zod versionato**
@@ -315,16 +346,24 @@ principio. Se "target toccato" includesse il traffico bash, lo stato tornerebbe
 a contenere affermazioni non dimostrabili — cioè esattamente ciò che questo
 ticket esiste per evitare. Meglio uno stato che sa meno ma non mente.
 
-## Punto aperto residuo
+## Punto aperto residuo — DECISO il 2026-09-28: resta (a)
 
 Il gate todowrite richiede che il tool che **legge** lo stato setti un flag di
-sessione. Chi è quel tool? Due opzioni:
+sessione. Due opzioni:
 - (a) un `bounty_status` tool dedicato, che l'agente DEVE chiamare;
 - (b) il caricamento automatico all'apertura sessione (`bb hunt`), senza tool.
 
-(b) è più solido (non dipende dall'agente) ma lega il gate a `bb hunt`.
-(a) è più flessibile (funziona anche fuori da `bb hunt`) ma reintroduce la
-dipendenza dal comportamento dell'agente. **Da decidere con l'utente.**
+**Decisa (a)**: l'agente deve chiamare `bounty_status`, e resta bloccato finché
+non lo fa. Motivo: è già implementato e testato, e funziona anche quando la
+sessione non parte da `bb hunt` — (b) legherebbe il gate a un solo punto di
+ingresso. Il costo accettato è che l'agente debba fare una chiamata in più; il
+beneficio è che il blocco non dipende dal percorso con cui la sessione è nata.
+
+Nota: questa scelta è coerente con la scelta già fatta sull'inizializzazione —
+`bb hunt` crea lo stato (il confine esiste), l'agente deve caricarlo (per
+poter pianificare). Sono due cose distinte: la prima riguarda l'esistenza del
+dato, la seconda l'uso che se ne fa.
+
 
 ## Scoperta: la chiave del progetto-hunting è `session.directory`, non `project_id`
 
