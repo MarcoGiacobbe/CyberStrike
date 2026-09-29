@@ -1,12 +1,87 @@
 # Ticket: help dei comandi bb (scopribilità e accuratezza)
 
-## Question
+## Stato: CHIUSO (2026-09-28) — il difetto descritto qui sotto era STALE
 
-`cyberstrike bb <action>` è registrato nell'help top-level (riga:
-`cyberstrike bb <action>  manage bug bounty programs`) ma **`cyberstrike bb
---help` non elenca le azioni**: connect, disconnect, whoami, mail, sync,
-accounts, list, info, add, remove, crawl restano invisibili a chi non sa già
-che esistono. L'inciampo concreto già osservato: l'utente ha digitato
+Il difetto originale ("`bb --help` non elenca le azioni") **non esiste più**:
+misurato col CLI reale, `bb --help` elenca tutte e dodici le azioni. Il
+comando era già stato dichiarato correttamente.
+
+Il difetto **vero**, trovato misurando, è un altro ed è più grave.
+
+## Il difetto vero: `cyberstrike bb` da solo moriva in silenzio
+
+Fatto misurato (CLI reale, questo host, `LANG=it_IT.UTF-8`):
+
+```
+$ cyberstrike bb      -> rc=1, ZERO byte di output
+$ cyberstrike bb --help -> rc=0, 1965 byte, tutte e 12 le azioni
+$ cyberstrike mcp     -> rc=1, ZERO byte di output
+```
+
+Con `LANG=C` lo stesso `bb` stampa l'help. Quindi il difetto compare
+**proprio sul sistema in italiano** di chi usa il tool: l'utente che vuole
+l'elenco dei comandi digita `bb` e riceve una riga vuota e un codice di
+errore senza spiegazione. Sembra un hang.
+
+## Causa: una chiave mancante in `yargs/locales/it.json`
+
+Non è un difetto di `bb`. La catena, verificata nel sorgente di yargs 18.0.0:
+
+1. yargs indovina la locale da `LC_ALL` → `LC_MESSAGES` → `LANG` → `LANGUAGE`
+   (`yargs-factory.js:1072`, `kGuessLocale`);
+2. carica `yargs/locales/<lang>.json`;
+3. `it.json` **esiste** ma è **incompleto**: contiene `Commands:` e `Options:`, e
+   **non** contiene `Not enough non-option arguments` — il messaggio che
+   `demandCommand()` usa quando manca l'azione;
+4. la chiave assente **non produce un fallback in inglese**: produce
+   `undefined`, che non stampa nulla.
+
+Lo stesso vale per `mcp` e per tutti gli altri gruppi che usano
+`demandCommand()` (12 gruppi: auth, mcp, session, provider, agent, skill,
+github, debug/*). Nessuno aveva `handler` esplicito, quindi il vuoto era
+condiviso.
+
+## Fix applicato
+
+Due livelli, come deciso con l'utente:
+
+1. **`.locale("en")` in `src/index.ts:50`** — nel punto unico di costruzione
+   del CLI. Disattiva il rilevamento automatico e tiene i messaggi di yargs in
+   inglese: il progetto scrive già tutti i propri testi in inglese. Risolve
+   tutti i 12 gruppi insieme invece di una toppa per comando.
+2. **`.demandCommand(1)` + handler che stampa l'help in `bb.ts`** — dichiarare
+   l'intenzione esplicitamente, e se `demandCommand` smettesse di intercettare
+   il caso, l'help è la risposta utile a "cosa scrivo qui dentro?", non un
+   errore secco.
+
+La forma vuota `handler: async (args) => {}` che c'era prima **era** il difetto:
+il comando ci cascava dentro e non faceva nulla. Ora l'handler è esplicito.
+
+## Verifica
+
+`test/cli/bb-help.test.ts`, 3 test:
+- `bb` da solo dice qualcosa (nel locale di default e in `it_IT` esplicito);
+- `bb --help` elenca le azioni anche in italiano.
+
+Controprova a `HEAD` (fix tolto, test invariato): `bb` in italiano → `rc=1`,
+0 byte; test → `1 pass 2 fail`. Col fix → `3 pass 0 fail`.
+
+**Controprova oltre il ticket**: `mcp` da solo, che non è oggetto di questo
+ticket, è tornato a stampare l'help grazie al fix globale.
+
+## Cosa NON ho fatto (e perché)
+
+Non ho completato `it.json` con le chiavi mancanti. Sarebbe stato il fix
+"più gentile", ma significa mantenere una traduzione che yargs 18 non carica
+più correttamente e che andrebbe sincronizzata a ogni versione; forzare `en`
+è una riga e non si rompe. Le etichette italiane automatiche nelle opzioni
+(`[booleano]`, `[stringa]`) spariscono: era quanto richiesto, e sono solo
+etichette di tipo, nessuna informazione persa.
+
+## Insieme di note (originali, ora superate dal misurato)
+
+`cyberstrike bb <action>` è registrato nell'help top-level ma le azioni
+restavano invisibili. L'inciampo concreto già osservato: l'utente ha digitato
 `cyberstrike bb connect` senza sapere che il comando esisteva, e prima ha
 provato a invocarlo dentro la TUI (dove `bb` non è un comando).
 

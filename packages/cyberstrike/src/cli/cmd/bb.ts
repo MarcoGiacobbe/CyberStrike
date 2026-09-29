@@ -8,6 +8,10 @@
 //   cyberstrike bb crawl google --target https://accounts.google.com
 
 import { cmd } from "./cmd"
+// `yargs()` serve all'handler qui sotto: senza l'azione non arriva nessun
+// subcomando, e `showHelp()` su un'istanza nuova stampa l'help di `bb`.
+// L'import mancante rendeva l'handler non compilabile — segnalato dal LSP.
+import yargs from "yargs"
 import {
   getBugBountyManager,
   loadHunterCredentials,
@@ -806,6 +810,24 @@ export const BBCommand = cmd({
             process.exit(code ?? 1)
           })
         },
-      ),
-  handler: async (args) => {},
+      )
+      // `demandCommand()` e' la convenzione degli altri 12 gruppi di comandi
+      // del CLI (auth, mcp, session, provider, debug/*, ...): senza, `bb` da
+      // solo cadeva nell'handler vuoto qui sotto e moriva con codice 1 e
+      // ZERO byte di output — l'utente vedeva una riga vuota e un errore senza
+      // spiegazione, peggio di non sapere che il comando esiste. Misurato con
+      // il CLI reale il 2026-09-28 (locale it_IT: rc=1, 0 byte).
+      .demandCommand(1),
+  // Raggiungibile solo con un'azione valida, perche' `demandCommand` intercetta
+  // il caso "nessuna azione". Resta perche' la sua forma vuota era il difetto:
+  // `bb` da solo cadeva qui e moriva con codice 1 e ZERO byte di output
+  // (misurato col CLI reale il 2026-09-28, LANG=it_IT.UTF-8) — l'utente
+  // vedeva una riga vuota e un errore senza spiegazione.
+  //
+  // Se `demandCommand` smettesse di intercettare questo caso, l'help e' la
+  // risposta utile a "cosa scrivo qui dentro?", non un errore secco.
+  handler: async (args) => {
+    void args
+    await yargs().showHelp()
+  },
 })

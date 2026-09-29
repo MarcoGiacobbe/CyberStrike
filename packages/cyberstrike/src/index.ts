@@ -51,6 +51,26 @@ const cli = yargs(hideBin(process.argv))
   .parserConfiguration({ "populate--": true })
   .scriptName("cyberstrike")
   .wrap(100)
+  // I messaggi di yargs restano in INGLESE anche su un sistema italiano.
+  //
+  // Senza questa riga yargs sceglie la lingua da `LANG`/`LC_ALL` e cerca la
+  // traduzione in `yargs/locales/<lang>.json`. La traduzione italiana esiste
+  // ma e' INCOMPLETA: contiene `Commands:`/`Options:` e NON contiene
+  // "Not enough non-option arguments", che e' il messaggio che
+  // `demandCommand()` usa quando manca l'azione. La chiave assente non produce
+  // un fallback: produce `undefined`, che non stampa nulla.
+  //
+  // Misurato con il CLI reale il 2026-09-28 su questo host (LANG=it_IT.UTF-8):
+  //   `cyberstrike bb`   -> rc=1, 0 byte di output
+  //   `cyberstrike mcp`  -> rc=1, 0 byte di output
+  // Con LANG=C gli stessi comandi stampano l'help: 1965 byte. Il difetto e'
+  // quindi della traduzione, non dei singoli comandi, e colpisce ogni gruppo di
+  // comandi che usa `demandCommand()`.
+  //
+  // Il progetto scrive gia' i propri testi in inglese: e' la lingua dei comandi
+  // e dell'help. Forzare `en` qui, nel punto unico di costruzione del CLI,
+  // risolve tutti i gruppi insieme invece di aggiungere una toppa per comando.
+  .locale("en")
   .help("help", "show help")
   .alias("help", "h")
   .version("version", "show version number", Installation.VERSION)
