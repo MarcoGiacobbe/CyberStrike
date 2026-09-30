@@ -31,7 +31,11 @@ export namespace HuntContext {
       uaTemplate?: string
     }
     state?: BountyState.Info
-    /** true se `program.json` non esiste ancora: il programma non e' sincronizzato */
+    /** true se il config del programma non esiste ancora: non e' sincronizzato.
+     *  Il file reale e' `<handle>.json` nella root bug bounty, NON `program.json`
+     *  dentro la directory (misurato il 2026-09-29: `program.json` non compare
+     *  in nessun punto di src/, e la directory `program` che `bb hunt` creava
+     *  dentro la cartella del programma non era letta da nessuno). */
     unsynced?: boolean
     /** fatto, non interpretazione: la directory di progetto esiste gia' su disco */
     existed?: boolean
@@ -64,8 +68,11 @@ export namespace HuntContext {
       out.push("")
     } else if (input.unsynced) {
       out.push(
-        `> **Programma non sincronizzato.** Non c'e' un \`program.json\`: lo scope e le regole qui sotto non ci sono. ` +
-          `Prima di toccare un target, l'utente deve lanciare \`bb sync ${input.program}\`.`,
+        `> **Programma non sincronizzato.** I dati del programma (scope, regole, payout) ` +
+          `non sono in disco: quello che leggi sotto e' quello che c'era all'ultimo salvataggio, ` +
+          `potrebbe essere vecchio o mancante. Prima di toccare un target verifica con ` +
+          `\`bb info ${input.program}\` e, se i dati non bastano, chiedi all'utente di lanciare ` +
+          `\`bb sync ${input.program}\`.`,
       )
       out.push("")
     }

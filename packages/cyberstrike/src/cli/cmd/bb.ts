@@ -690,7 +690,11 @@ export const BBCommand = cmd({
           // non e' un dry-run: `--dry-run` non tocca il filesystem, se no non
           // e' un dry-run. Misurato il 2026-09-26.
           const existed = fs.existsSync(directory)
-          if (!unsynced && !args.dryRun) fs.mkdirSync(path.join(directory, "program"), { recursive: true })
+          // Niente `mkdir program`: la sottocartella non era letta da nessun
+          // punto di src/ (unica occorrenza di `join(directory, "program")` era
+          // questa riga stessa, misurata il 2026-09-29) e lasciava directory
+          // vuote dentro i programmi reali. La directory del programma e'
+          // gia' creata dal passo 2, che e' l'unica cosa servita.
 
           // 3. Stato: assente in un progetto nuovo, e non è un errore.
           //    Se e' proprio ASSENTE (non illegibile) e il programma e' valido,
@@ -788,7 +792,23 @@ export const BBCommand = cmd({
           //    argomenti e per la sessione persistita.
           // Il TUI e' il comando DEFAULT (`command: "$0 [project]"`, tui/thread.ts:45), non un
           // sottocomando "thread": passargli "thread" avrebbe fatto stampare l'help.
-          const tuiArgs = ["--session", session.id, "--prompt", message, "--agent", args.agent]
+          // `--project` = la directory del PROGRAMMA, non il cwd da cui l'utente
+          // ha lanciato il comando. Il TUI fa `process.chdir(args.project)`
+          // (tui/thread.ts:95): senza questo argomento l'agente parte dalla
+          // cartella del terminale e `AGENTS.md` viene risolto sul posto
+          // sbagliato — l'agente riceve le istruzioni del progetto da cui
+          // l'utente e' partito, non quelle del programma di bug bounty.
+          // Difetto misurato il 2026-09-29, non ipotizzato.
+          const tuiArgs = [
+            "--session",
+            session.id,
+            "--prompt",
+            message,
+            "--agent",
+            args.agent,
+            "--project",
+            directory,
+          ]
           // La root del package cyberstrike: da qui parte il TUI. Derivata da
           // questo file, non da cwd — l'utente puo' lanciare `bb hunt` da
           // qualsiasi directory e il TUI deve partire lo stesso.

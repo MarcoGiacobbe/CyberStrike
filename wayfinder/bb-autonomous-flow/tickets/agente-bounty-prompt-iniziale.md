@@ -1,5 +1,88 @@
 # Ticket: agente bounty + messaggio iniziale di sessione
 
+## Stato: FASE 1 IMPLEMENTATA E MISURATA (2026-09-29)
+
+## Ritrovamento che cambia la fase 3 (2026-09-29)
+
+**Il file `policy.md` completo esiste GIA' su disco.** `bb sync` lo scrive:
+`sync.ts:176` → `writeFileSync(\`${dir}/${handle}.policy.md\`, policy)`.
+
+Misurato sulla macchina dell'utente:
+```
+bcny.policy.md        12.702 byte
+bookingcom.policy.md  12.966 byte
+security.policy.md     7.226 byte
+```
+
+Conclusione: la fase 3 NON deve generare il file. Deve **indirizzarlo** —
+il messaggio iniziale e l'`AGENTS.md` dicono all'agente che il testo
+integrale della policy è quel file, invece dei 500 caratteri troncati. Il
+lavoro reale della fase 3 è `scope.md` + payout per-asset + il collegamento.
+
+## Fase 1 — fatta e controprovata
+
+Tre difetti, tutti misurati a `HEAD` prima del fix:
+
+1. **`bb hunt` non passava la directory del programma al TUI.**
+   `bb.ts:791` costruiva `tuiArgs` senza `--project`. Il TUI fa
+   `process.chdir(args.project ? resolve(...) : process.cwd())`
+   (`tui/thread.ts:95`), quindi l'agente partiva dalla cartella del terminale
+   e `AGENTS.md` veniva risolto sul posto sbagliato: l'agente riceveva le
+   istruzioni del progetto da cui l'utente aveva lanciato il comando.
+   FIX: `--project <directory del programma>` nei tuiArgs.
+
+2. **Il messaggio all'agente prometteva un `program.json` che non esiste.**
+   `hunt-context.ts` diceva "Non c'e' un `program.json`: lo scope e le regole
+   qui sotto non ci sono". `program.json` non compare in nessun punto di
+   `src/`: il file reale e' `<handle>.json` nella root bug bounty
+   (`bb.ts:664-671`). Il messaggio negava dati che l'agente aveva sotto gli
+   occhi e promise un file inesistente.
+   FIX: riscritto — dice che i dati non sono in disco e che cosa fare.
+
+3. **Una directory vuota creata a ogni avvio.** `bb.ts:693` faceva
+   `mkdirSync(path.join(directory, "program"))`. Unica occorrenza di quel
+   nome in tutto `src/`: la riga stessa. Nessuno la leggeva.
+   FIX: rimossa.
+
+### Test e controprova
+
+`test/cli/bb-hunt-directory.test.ts`, 4 test.
+
+```
+col fix:   4 pass, 0 fail
+a HEAD:    2 pass, 2 fail   (i due difetti reali)
+typecheck: 11/11
+```
+
+**Due test sono dichiarati non-regressione** e non provano i difetti:
+- "il TUI accetta un argomento di progetto": a `HEAD` e' gia' verde, il flag
+  esisteva gia' nel TUI. Serve a impedire che il fix passi un flag inventato.
+- "la directory creata non contiene `program`": il dry-run gia' evitava la
+  mkdir. Dice cosa non deve ricomparire, non che il difetto fosse riprodotto.
+
+### Due errori miei durante il lavoro, dichiarati
+
+- Il test ispezionava il sorgente con una regex; l'apostrofo di `e'` nei
+  commenti italiani la faceva agganciare. Riscritto per **chiamare**
+  `HuntContext.message()`: si misura il testo che l'agente riceve davvero.
+- La finestra di 8 righe attorno a `tuiArgs` si fermava a `--agent` e non
+  arrivava a `--project`: il test era rosso **col fix gia' applicato**, cioe'
+  misurava la mia ipotesi sulla formattazione. Ora legge l'array intero.
+
+### Difetto scoperto, NON ancora chiuso
+
+`test/tool/bounty-state-initialization.test.ts:34-37` costruisce a mano
+`program/program.json`, cioe' lo stesso file che non esiste in produzione. Il
+test passa ma la sua premessa e' falsa: e' un test che non descrive il
+comportamento reale. Da riscrivere quando si affronta lo stato.
+
+## Storico del difetto (rimosso: era STALE)
+
+Il ticket originale lamentava che il messaggio iniziale non mostrasse
+piattaforma, URL del programma e regole custom. Quei dati **esistono gia'**
+in `sync.ts` e in `HuntContext.message`. Cio' che manca davvero e' altro, e
+e' quello scritto sopra.
+
 ## Question
 
 Definire l'agente dedicato all'hunting su programma (toolset + prompt) e il
