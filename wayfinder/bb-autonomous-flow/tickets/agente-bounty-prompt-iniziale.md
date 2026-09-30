@@ -19,7 +19,89 @@ il messaggio iniziale e l'`AGENTS.md` dicono all'agente che il testo
 integrale della policy è quel file, invece dei 500 caratteri troncati. Il
 lavoro reale della fase 3 è `scope.md` + payout per-asset + il collegamento.
 
-## Fase 1 — fatta e controprovata
+## Fase 2 — fatta e controprovata (2026-09-29)
+
+`bb hunt` sincronizza da solo se i dati hanno piu' di 24 ore; `--force` forza.
+`bb sync` manuale resta intatto.
+
+### La scelta, e perche' non a ogni avvio
+
+Non e' "sync a ogni `bb hunt`", e' "sync se i dati hanno piu' di 24 ore".
+Motivi, perche' la decisione va scritta accanto al codice:
+
+- il TUI e' un processo da ~800 MB: l'avvio costa piu' del sync;
+- `bb hunt` su un programma gia' fresco **non deve dipendere dalla rete**:
+  se la rete e' assente l'avvio deve funzionare lo stesso, perche' i dati
+  che ci sono bastano a partire;
+- `--force` aggiorna quando serve.
+
+E' la regola che si ha gia' davanti con npm, docker o un pacchetto pip.
+
+### Comportamento misurato (non ipotizzato)
+
+Tre regole, verificate col CLI reale:
+
+1. **`--dry-run` non sincronizza.** Verificato su `bcny` (dati di 6 giorni):
+   stampa `(--dry-run: sincronizzerei bcny — dati di 6 giorni fa)` e non
+   scrive. Il config resta identico.
+2. **Il sync fallito non blocca l'avvio.** Misurato lanciando `bb hunt` su un
+   programma inesistente con scope vecchio di 30 giorni: il sync e' partito
+   ed e' fallito con `HackerOne GraphQL: Team does not exist`, l'avvio ha
+   continuato, la sessione e' stata creata e il TUI lanciato con lo scope
+   VECCHIO. Nessun exit 1.
+3. **L'avviso va NEL PROMPT dell'agente, non solo a terminale.** Sta prima di
+   `## Scope IN`, perche' se l'agente legge prima lo scope e poi l'avviso
+   l'avviso non serve. Motivo: un report prodotto su scope invecchiato viene
+   respinto, quindi e' l'agente — non l'utente — la prima cosa che deve
+   sapere che quei dati non sono freschi.
+
+Testo che arriva all'agente:
+```
+> ⚠ non ho potuto aggiornare i dati di nonesiste: HackerOne GraphQL: Team does not exist
+> uso quelli dell'ultimo salvataggio — 30 giorni fa. Non fidarti dello scope: prima di toccare un
+  target, digli all'utente di lanciare `bb sync nonesiste`.
+```
+
+### Test: 9 nuovi, controprova eseguita
+
+`test/cli/bb-hunt-sync.test.ts`
+
+```
+col fix:                    9 pass, 0 fail
+bb.ts a HEAD:               7 pass, 2 fail
+typecheck:                  11/11
+suite:                      1831 pass, 1 fail preesistente (xai/grok-3)
+```
+
+La controprova e' instructiva e vale la pena leggerla: a HEAD i test delle
+**funzioni pure** (`needsSync`, `ageHours`) restano VERDI, e si rossa solo il
+test che verifica il **cablaggio**. Questo conferma il limite dichiarato:
+quelli testano la logica, non che `bb hunt` la chiami. Il test del cablaggio
+(`il sync e' CABLATO`) e' quello che misura la fase.
+
+**Dichiarati non-regressione** (verdi a HEAD, non provano un difetto):
+- "col programma gia' fresco non riscrive il config"
+- "`bb sync` manuale resta funzionante"
+
+### Errori miei durante la fase, dichiarati
+
+- Il test del cablaggio confrontava due timestamp assoluti calcolati in
+  due istanti diversi: rosso per i millisecondi, non per il difetto.
+  Ora confronta l'eta' in giorni.
+- Quando ho provato `bb hunt` SENZA `--dry-run` per verificare il fallback,
+  il comando e' andato in timeout e ha **lasciato un TUI appeso** (~800 MB).
+  Chiuso con SIGKILL; verificato: 0 processi, 0 tmp, 0 container. La prova
+  del fallback l'ho ricavata leggendo gli argomenti reali del processo da
+  `/proc`, non ricostruendoli a memoria.
+
+### Nota su `ageHours`
+
+Un `lastUpdated` nel FUTURO restituisce `Infinity`, non 0: e' un dato corrotto,
+e trattarlo come "freschissimo" farebbe partire l'agente senza sincronizzare
+per anni. `lastUpdated` assente o illeggibile restituisce `null` = da
+sincronizzare, non "fresco".
+
+## Fase 1 — fatta e controprovata (2026-09-29)
 
 Tre difetti, tutti misurati a `HEAD` prima del fix:
 

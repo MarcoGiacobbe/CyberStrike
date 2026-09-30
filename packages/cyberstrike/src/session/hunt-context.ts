@@ -41,6 +41,14 @@ export namespace HuntContext {
     existed?: boolean
     /** true se il programma e' stato rimosso con `bb remove` ma la directory c'e' */
     orphan?: boolean
+    /**
+     * Il sync automatico e' fallito e si sta proseguendo con i dati di prima.
+     * Va NEL MESSAGGIO, non solo a terminale: se l'agente produce un report
+     * su uno scope invecchiato il report viene respinto, quindi e' l'agente
+     * — non l'utente — la prima cosa che deve sapere che quei dati non
+     * sono freschi. Testo pronto, gia' scritto da `bb-sync-freshness`.
+     */
+    stale?: string
   }): string {
     const out: string[] = []
     const cfg = input.config
@@ -56,6 +64,13 @@ export namespace HuntContext {
       "Sei dentro il perimetro di questo progetto: puoi leggere ovunque, scrivere solo qui dentro.",
     )
     out.push("")
+
+    // L'avviso di dati non freschi va per primo, prima di scope e payout: se
+    // non sono aggiornati, tutto cio' che segue va letto con quel dubbio.
+    if (input.stale) {
+      out.push(input.stale)
+      out.push("")
+    }
 
     // I due avvisi sono mutuamente esclusivi: "rimosso" È il caso peggiore di
     // "non sincronizzato" (config assente + directory presente). Stamparli

@@ -31,6 +31,7 @@ import {
   setAccountStatus,
 } from "@cyberstrike-io/hackbrowser/accounts"
 import { syncProgram } from "@cyberstrike-io/hackbrowser/sync"
+import * as fresh from "./bb-sync-freshness"
 import { UI } from "../ui"
 import { spawn } from "node:child_process"
 import path from "node:path"
@@ -621,6 +622,11 @@ export const BBCommand = cmd({
               type: "boolean",
               default: false,
               describe: "print the initial message, the perimeter and the state, then exit",
+            })
+            .option("force", {
+              type: "boolean",
+              default: false,
+              describe: "sync the program even if its data is less than 24h old",
             }),
         async (args) => {
           const program = args.program
@@ -672,6 +678,43 @@ export const BBCommand = cmd({
             unsynced = false
           } catch {
             config = undefined
+          }
+
+          // 1b. Il sync automatico. `bb hunt` ricarica i dati del programma se
+          //     hanno piu' di 24 ore, cosi' l'utente non deve ricordarsi di
+          //     lanciare `bb sync` prima di ogni sessione. `--force` lo forza.
+          //
+          //     Tre regole, tutte qui perche' il perche' si vede meglio che
+          //     nei commit:
+          //       - `--dry-run` NON sincronizza: un dry-run che scrive in
+          //         ~/.cyberstrike non e' un dry-run.
+          //       - Se il sync fallisce l'avvio CONTINUA con i dati di prima.
+          //         Bloccare qui vuol dire che una rete assente impedisce di
+          //         chiudere il lavoro di ieri; l'avviso dice invece all'agente
+          //         che quei dati non sono freschi, ed e' lui a decidere.
+          //       - Il fallback per l'agente e' `staleNotice`: l'avviso va
+          //         NEL PROMPT, non solo a terminale, perche' se l'agente
+          //         produce un report su uno scope vecchio il report viene
+          //         respinto.
+          let stale: string | undefined
+          const etaPrima = fresh.ageHours(config?.lastUpdated)
+          if (fresh.needsSync(etaPrima, fresh.DEFAULT_MAX_AGE_HOURS, args.force === true)) {
+            if (args.dryRun) {
+              console.log(
+                `(--dry-run: sincronizzerei ${program} — dati di ${etaPrima === null ? "?" : Math.floor(etaPrima / 24) + " giorni"} fa)`,
+              )
+            } else {
+              console.log(`🔄 Aggiorno i dati di ${program}…`)
+              try {
+                await syncProgram(program)
+                config = JSON.parse(fs.readFileSync(configPath, "utf8"))
+                unsynced = false
+                console.log(`✅ ${program} aggiornato`)
+              } catch (e) {
+                stale = fresh.staleNotice(program, fresh.ageHours(config?.lastUpdated), e)
+                console.log(stale)
+              }
+            }
           }
 
           // `orphan` = la directory di un progetto esiste, ma il programma NON e'
@@ -751,6 +794,7 @@ export const BBCommand = cmd({
             unsynced,
             orphan,
             existed,
+            stale,
           })
 
           if (args.dryRun) {
