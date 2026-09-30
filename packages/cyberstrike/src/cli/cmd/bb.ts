@@ -32,6 +32,7 @@ import {
 } from "@cyberstrike-io/hackbrowser/accounts"
 import { syncProgram } from "@cyberstrike-io/hackbrowser/sync"
 import * as fresh from "./bb-sync-freshness"
+import { writeProgramDocs } from "./bb-program-docs"
 import { UI } from "../ui"
 import { spawn } from "node:child_process"
 import path from "node:path"
@@ -766,6 +767,32 @@ export const BBCommand = cmd({
           if (!state && !args.dryRun) {
             state = BountyState.create({ directory, program })
             BountyState.write(state)
+          }
+
+          // 3b. I due file che l'agente legge all'arrivo: `AGENTS.md` (l'indice)
+          //     e `scope.md` (cosa e' dentro e cosa no). Vengono riscritti a ogni
+          //     avvio perche' lo scope cambia: lasciare un file di 20 giorni fa
+          //     accanto a dati freschi e' peggio che non averlo.
+          //     La policy integrale NON viene toccata: `bb sync` l'ha gia'
+          //     scritta e duplicarla aprirebbe due fonti che divergono.
+          if (config) {
+            try {
+              // La directory serve anche in `--dry-run`: e' l'unico modo di
+              // vedere i documenti senza lanciare il TUI da 800MB. Senza questa
+              // mkdir la scrittura falliva con ENOENT e il dry-run non mostrava
+              // niente — cioe' il comando che serve a ispezionare, non mostrava.
+              fs.mkdirSync(directory, { recursive: true })
+              // `path.dirname(programsRoot)`, NON `programsRoot`: la policy la
+              // scrive `bb sync` nella root di bugbounty, mentre `programsRoot`
+              // e' la directory delle cartelle per-programma. Passando la
+              // seconda, `AGENTS.md` dichiarava "policy non in locale" su un
+              // file che esisteva — un rimando rotto su dati reali.
+              writeProgramDocs(config, directory, path.dirname(programsRoot))
+            } catch (e) {
+              // I documenti sono un aiuto, non un prerequisito: se la scrittura
+              // fallisce l'agente parte lo stesso e lo dice nel messaggio.
+              console.error(`  ! non ho potuto scrivere i documenti del programma: ${(e as Error).message}`)
+            }
           }
 
           // 4. Il perimetro. È QUI che il confine diventa effettivo: senza

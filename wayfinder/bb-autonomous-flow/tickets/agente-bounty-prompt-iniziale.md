@@ -19,6 +19,93 @@ il messaggio iniziale e l'`AGENTS.md` dicono all'agente che il testo
 integrale della policy è quel file, invece dei 500 caratteri troncati. Il
 lavoro reale della fase 3 è `scope.md` + payout per-asset + il collegamento.
 
+## Fase 3 — fatta e controprovata (2026-09-30)
+
+Nella directory di ogni programma ora ci sono `AGENTS.md` (l'indice, 750 byte)
+e `scope.md` (lo scope, 757 byte). Entrambi riscritti a ogni `bb hunt`.
+
+### La scelta: due file, non tre
+
+`AGENTS.md` e' l'indice e dice dove trovare il resto. `scope.md` e' lo scope.
+La **policy integrale non viene rigenerata**: `bb sync` la scrive gia' in
+`~/.cyberstrike/bugbounty/<handle>.policy.md` (12.719 byte per bcny) e copiarla
+qui aprirebbe due fonti che divergono. Il compito e' il rimando, non la copia.
+
+Il rimando e' un percorso ASSOLUTO, perche' la directory del programma e'
+`.../bugbounty/programs/<handle>/` e la policy sta due livelli sopra.
+
+### La classificazione che mancava: URL e non-URL
+
+`bcny` ha 13 asset in scope e NON sono tutti siti. Mescolati in una lista
+unica, un agente che legge `Arc on Mac` accanto ad `arc.net` puo' tentare di
+visitare `arc.net` per il bounty di Arc on Mac — che e' un'app desktop da
+$20,000, e cosi' spende i suoi passi sul target sbagliato.
+
+`scope.md` li separa:
+
+```
+## Siti web in scope
+- arc.net
+- thebrowser.company
+- bcny.com
+- diabrowser.com
+- company.thebrowser.arc
+
+## Prodotti in scope (non sono siti web)
+Non aprire questi come pagine web: sono app o prodotti.
+- Dia Assistant
+- Arc on Mac
+- ...
+
+## In scope, da chiarire con l'utente
+- id6472513080 (non e' un sito ne' un prodotto: chiedi prima)
+```
+
+`id6472513080` e' un id numerico: non ha un punto, quindi non e' un dominio,
+e non ha spazi, quindi non e' un prodotto. Va in una terza sezione esplicita
+invece di sparire: un asset che sparisce e' un asset che l'agente ignora in
+silenzio, che e' peggio di uno che chiede.
+
+### Difetto trovato e corretto: il rimando era rotto
+
+Prima versione: `AGENTS.md` scriveva "la policy NON e' in locale: lanciare
+`bb sync`". Il file esisteva. Causa: passavo `programsRoot`
+(`.../bugbounty/programs`) come directory della policy, che sta invece nella
+root di `bugbounty`. Un rimando rotto e' peggio di nessun rimando: l'agente
+chiede all'utente una sync che non serve.
+
+Corretto e coperto da un test dedicato, la cui controprova ho eseguito
+rimettendo il path sbagliato: **7 pass, 1 fail** solo su quel test.
+
+### Difetto trovato: `--dry-run` non mostrava nulla
+
+Il test del cablaggio e' rosso perche' in `--dry-run` la directory non
+esisteva (la creazione dello stato e' saltata, essendo `!args.dryRun`) e la
+scrittura falliva con `ENOENT`. Il mio codice lo dichiarava da solo a
+terminale: "non ho potuto scrivere i documenti". Aggiunta la `mkdir`.
+
+Ironico: il comando che serve a ispezionare senza lanciare il TUI da 800MB
+era proprio quello che non ispezionava.
+
+### Test: 8 nuovi
+
+```
+col fix:                    8 pass, 0 fail
+bb.ts a HEAD:               6 pass, 1 fail  (solo il cablaggio)
+path sbagliato rimesso:     7 pass, 1 fail  (solo la regressione del rimando)
+typecheck:                  11/11
+```
+
+Due controprove distinte, perche' i due difetti sono due difetti: uno nel
+cablaggio, uno nel percorso. Un test solo avrebbe coperto il primo e lasciato
+il secondo verde.
+
+### Pulizia
+
+Rimossa `~/.cyberstrike/bugbounty/programs/bcny/program/`, directory VUOTA
+lasciata il 26 settembre dalla vecchia `mkdir`. Verificato che fosse vuota
+prima di rimuoverla.
+
 ## Fase 2 — fatta e controprovata (2026-09-29)
 
 `bb hunt` sincronizza da solo se i dati hanno piu' di 24 ore; `--force` forza.
