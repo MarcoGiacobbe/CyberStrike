@@ -24,13 +24,35 @@ reali". Misurato, è diverso in tre punti:
    `/v1/hackers/programs/<id>/structured_scopes` risponde `404 Team does not
    exist` — non "vietato", inesistente. Su un campione di 25 programmi
    visibili col token, nessuno era privato. Quindi **non c'è da "gestire il
-   privato"**: non è una nostra lacuna, è un limite dell'API. Lo scope resta
-   anonimo, e resta la sua unica fonte.
+   privato"**: non è una nostra lacuna, è un limite dell'API.
 
-3. **La REST è paginata e l'ordine non è stabile.** Con il token si ottengono
-   595 programmi in 6 pagine; `bcny` è in pagina 6 (non in pagina 1). Una
-   singola richiesta avrebbe fatto fallire la policy per la maggior parte dei
-   programmi. Dettaglio scoperto verificando sul reale, non sui test.
+   *Correzione 2026-10-01, importante:* avevo trattato quel `404` come prova
+   che "lo scope col token non esiste". **Non è vero**, e me l'ha chiesto
+   l'utente. Esiste, ma per **handle**, non per ID:
+   `GET /v1/hackers/programs/<handle>/structured_scopes` → `200`, 11 record
+   con `asset_type`, `eligible_for_bounty`, `max_severity` e i requisiti
+   `confidentiality/integrity/availability` — cioè *come* è permesso
+   testare l'asset, che l'anonimo non dà.
+
+   Ma **non aggiunge scope in-scope**: confronto misurato su `bcny`,
+   anonimo 13 asset, token 11, **nessuno solo nel token**, e 2 solo
+   nell'anonimo (`Dia Browser`, `Arc on Window`). Per la lista degli asset
+   in-scope l'anonimo resta migliore, e resta la fonte usata. Il token
+   vale per i metadati di testabilità, non per la lista.
+
+3. **La REST è paginata.** Con il token si ottengono 595 programmi in 6
+   pagine da 100; `bcny` è in pagina 6, non in pagina 1. Una singola richiesta
+   avrebbe fatto fallire la policy per la maggior parte dei programmi. Il
+   paging è **stabile**: 3 richieste per pagina hanno dato impronte MD5
+   identiche. *(Correzione 2026-10-01: avevo scritto "e l'ordine non è
+   stabile" senza averlo misurato. È falso, e la prova che l'aveva fatto
+   sospettare — `bcny` a pagina 2 in una richiesta — era una mia query con la
+   variabile sbagliata.)*
+
+3b. **Il fetch per handle esiste e non serve paginare** per la policy:
+   `GET /v1/hackers/programs/<handle>` → `200`. La paginazione serve solo per
+   l'elenco completo dei programmi. *(Scoperto dopo il primo commit; da
+   integrare.)*
 
 Cosa il token dà, in concreto: **la lista dei programmi che l'utente può
 vedere** e una **copia della policy via REST che non tronca**. Attenzione:

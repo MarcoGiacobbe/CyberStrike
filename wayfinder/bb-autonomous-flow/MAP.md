@@ -300,10 +300,10 @@ anonimo invariato byte per byte, e **solo se c'e' un token** la policy via
 REST (che non tronca) piu' l'elenco dei 595 programmi visibili. Tre fatti
 misurati che cambiano il presupposto del ticket: il token **non puo'**
 sostituire l'anonimo (`hackerone.com/graphql` risponde `401` al token API),
-lo **scope privato non esiste per un cacciatore** (`/structured_scopes` → `404
-"Team does not exist"`, 0 privati su 25 campionati), e la REST e' **paginata
-e non ordinata** (`bcny` e' in pagina 6 su 6: senza paginazione la policy
-arrivava solo per i programmi in pagina 1).
+lo **scope privato non esiste per un cacciatore** (0 privati su 25
+campionati), e la REST e' **paginata** (`bcny` e' in pagina 6 su 6: senza
+paginazione la policy arrivava solo per i programmi in pagina 1 — paging
+verificato stabile, 3 richieste = 3 impronte identiche).
 
 **Chiusi ma NON risolti — 3.** Stati reali, che non vanno mescolati con
 "chiusi" perche' un riaprire costerebbe piu' di un aperto:
