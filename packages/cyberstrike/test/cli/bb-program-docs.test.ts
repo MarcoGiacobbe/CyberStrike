@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, symlinkSync, linkSync, readFileSync, lstatSync, statSync, readdirSync, chmodSync, openSync, closeSync, renameSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { classifyTargets, renderScopeDoc, renderAgentsDoc } from "../../src/cli/cmd/bb-program-docs"
+import { classifyTargets, renderScopeDoc, renderAgentsDoc, writeProgramDocs } from "../../src/cli/cmd/bb-program-docs"
 import type { BountyProgramConfig } from "@cyberstrike-io/hackbrowser/bugbounty"
 
 /**
@@ -120,6 +120,396 @@ describe("fase 3: CABLAGGIO in bb hunt", () => {
       if (prev === undefined) delete process.env.CYBERSTRIKE_HOME
       else process.env.CYBERSTRIKE_HOME = prev
       rmSync(home, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("perimetro di scrittura: la tmp del programma", () => {
+  test("AGENTS.md dichiara tmp/ come l'unico posto per i file di caccia", () => {
+    const md = renderAgentsDoc(base, "/programs")
+    expect(md).toContain("tmp/")
+    // non generico: il divieto di scrivere fuori deve restare, e tmp/ deve
+    // essere indicato come l'eccezione, non come una zona qualsiasi.
+    expect(md).toMatch(/tmp\//)
+  })
+
+  test("`bb hunt` crea la cartella tmp/ dentro la directory del programma", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "bbtmp-"))
+    const prev = process.env.CYBERSTRIKE_HOME
+    process.env.CYBERSTRIKE_HOME = home
+    try {
+      mkdirSync(path.join(home, "bugbounty"), { recursive: true })
+      const d = new Date(Date.now() - 3 * 86_400_000).toISOString()
+      writeFileSync(
+        path.join(home, "bugbounty", "esempio.json"),
+        JSON.stringify({ name: "esempio", platform: "hackerone", scope: { in: ["vecchio.example"], out: [] }, payouts: { low: "$1" }, lastUpdated: d }),
+      )
+      const r = Bun.spawnSync(
+        ["bun", "run", "--conditions=browser", "src/index.ts", "bb", "hunt", "esempio", "--dry-run"],
+        { cwd: process.cwd(), env: { ...process.env, CYBERSTRIKE_HOME: home }, timeout: 120_000 },
+      )
+      expect(r.stdout.toString() + r.stderr.toString()).toContain("sincronizzerei esempio")
+      const dir = path.join(home, "bugbounty", "programs", "esempio")
+      expect(existsSync(path.join(dir, "tmp"))).toBe(true)
+    } finally {
+      if (prev === undefined) delete process.env.CYBERSTRIKE_HOME
+      else process.env.CYBERSTRIKE_HOME = prev
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("tmp/: il difetto del symlink trovato dal subagent (deleg_cb90184f)", () => {
+  test("una tmp che e' un symlink NON viene seguita (fuori dal perimetro)", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-link-"))
+    const directory = path.join(root, "programs", "bcny")
+    const fuori = path.join(root, "FUORI-DAL-PERIMETRO")
+    mkdirSync(directory, { recursive: true })
+    mkdirSync(fuori, { recursive: true })
+    // Il caso che il subagent ha misurato: `mkdirSync` su un symlink esce 0
+    // e non lo tocca, quindi `tmp` diventava la directory esterna.
+    symlinkSync(fuori, path.join(directory, "tmp"))
+    expect(() => writeProgramDocs(base, directory, path.join(root, "programs"))).toThrow(/symlink/i)
+    // Il link non va seguito, cancellato ne' risolto: la directory esterna
+    // resta intatta e non ci compare nessun file.
+    expect(readdirSync(fuori)).toEqual([])
+    expect(lstatSync(path.join(directory, "tmp")).isSymbolicLink()).toBe(true)
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test("una tmp preesistente a 0777 viene corretta a 0700", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-perm-"))
+    const directory = path.join(root, "programs", "bcny")
+    mkdirSync(path.join(directory, "tmp"), { recursive: true, mode: 0o777 })
+    // `mkdir recursive` NON tocca i permessi di una dir gia' esistente: a
+    // HEAD questa tmp restava a 0777, scrivibile da chiunque sulla macchina.
+    chmodSync(path.join(directory, "tmp"), 0o777)
+    writeProgramDocs(base, directory, path.join(root, "programs"))
+    expect(statSync(path.join(directory, "tmp")).mode & 0o777).toBe(0o700)
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test("una tmp normale e' creata a 0700", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-ok-"))
+    const directory = path.join(root, "programs", "bcny")
+    mkdirSync(directory, { recursive: true })
+    writeProgramDocs(base, directory, path.join(root, "programs"))
+    expect(statSync(path.join(directory, "tmp")).mode & 0o777).toBe(0o700)
+    rmSync(root, { recursive: true, force: true })
+  })
+})
+
+describe("AGENTS.md/scope.md: il BYPASS trovato dal secondo subagent (deleg_6dc3ac19)", () => {
+  test("un AGENTS.md symlink NON fa scrivere fuori dal perimetro", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-sl-agents-"))
+    const directory = path.join(root, "programs", "bcny")
+    const fuori = path.join(root, "FUORI")
+    mkdirSync(directory, { recursive: true })
+    mkdirSync(fuori, { recursive: true })
+    const esterno = path.join(fuori, "AGENTS-stolen.md")
+    symlinkSync(esterno, path.join(directory, "AGENTS.md"))
+    writeProgramDocs(base, directory, path.join(root, "programs"))
+    // Il file esterno NON deve ricevere un byte: a HEAD riceveva 979 byte
+    // attraverso il link, con `bb hunt --dry-run` che usciva rc=0.
+    expect(existsSync(esterno)).toBe(false)
+    // E il documento resta nel perimetro, col contenuto vero: il link viene
+    // SOSTITUITO, non seguito.
+    expect(lstatSync(path.join(directory, "AGENTS.md")).isSymbolicLink()).toBe(false)
+    expect(readFileSync(path.join(directory, "AGENTS.md"), "utf-8")).toMatch(/bug bounty/)
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test("uno scope.md symlink NON fa scrivere fuori dal perimetro", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-sl-scope-"))
+    const directory = path.join(root, "programs", "bcny")
+    const fuori = path.join(root, "FUORI")
+    mkdirSync(directory, { recursive: true })
+    mkdirSync(fuori, { recursive: true })
+    const esterno = path.join(fuori, "scope-stolen.md")
+    symlinkSync(esterno, path.join(directory, "scope.md"))
+    writeProgramDocs(base, directory, path.join(root, "programs"))
+    expect(existsSync(esterno)).toBe(false)
+    expect(lstatSync(path.join(directory, "scope.md")).isSymbolicLink()).toBe(false)
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test("un HARD LINK non porta il contenuto fuori dal perimetro", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-hl-"))
+    const directory = path.join(root, "programs", "bcny")
+    const fuori = path.join(root, "FUORI")
+    mkdirSync(directory, { recursive: true })
+    mkdirSync(fuori, { recursive: true })
+    // Un hard link non e' distinguibile da un file normale con `lstat`: un
+    // controllo sul tipo NON lo vedrebbe. `rename` invece toglie solo questa
+    // voce di directory: l'inode esterno (l'altro nome) resta intatto.
+    const esterno = path.join(fuori, "scope-hl.md")
+    writeFileSync(esterno, "CONTENUTO-ESTERNO-INTATTO")
+    linkSync(esterno, path.join(directory, "scope.md"))
+    writeProgramDocs(base, directory, path.join(root, "programs"))
+    expect(readFileSync(esterno, "utf-8")).toBe("CONTENUTO-ESTERNO-INTATTO")
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test("un tmp che e' un HARD LINK a una directory non e' accettato come normale", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-hld-"))
+    const directory = path.join(root, "programs", "bcny")
+    const fuori = path.join(root, "FUORI")
+    mkdirSync(directory, { recursive: true })
+    mkdirSync(fuori, { recursive: true })
+    // Un hard link a una DIRECTORY non e' permesso dal kernel per i non-root:
+    // se il filesystem lo rifiuta il test lo dice invece di fingere di aver
+    // verificato qualcosa.
+    try {
+      linkSync(fuori, path.join(directory, "tmp"))
+    } catch (e) {
+      expect(String(e)).toMatch(/EPERM|ENOTSUP|EACCES|EEXIST|EMLINK|EOPNOTSUPP|UNKNOWN/i)
+      rmSync(root, { recursive: true, force: true })
+      return
+    }
+    writeProgramDocs(base, directory, path.join(root, "programs"))
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test("la DIRECTORY del programma resa symlink non porta le scritture fuori", () => {
+    // Terzo vettore, trovato misurando da soli: la difesa sui nomi dei file
+    // (`writeInside`) non copre il caso in cui e' la CARTELLA del programma a
+    // essere un link. MISURATO con l'entry point reale: `programs/bcny` link a
+    // `/tmp/outdir-...` + `bb hunt bcny --dry-run` -> `AGENTS.md`, `scope.md` e
+    // `tmp/` creati DENTRO la cartella esterna, `rc=0`.
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-dirlink-"))
+    const programs = path.join(root, "programs")
+    const fuori = path.join(root, "FUORI")
+    mkdirSync(programs, { recursive: true })
+    mkdirSync(fuori, { recursive: true })
+    symlinkSync(fuori, path.join(programs, "bcny"))
+    expect(() => writeProgramDocs(base, path.join(programs, "bcny"), programs)).toThrow(/FUORI|link/i)
+    // e non ha scritto niente fuori
+    expect(readdirSync(fuori)).toEqual([])
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test("programs/ stessa resa symlink: niente scritture fuori (senza concorrenza)", () => {
+    // Difetto RIPRODOTTO dal quarto subagent (deleg_b41be483): se e' la
+    // cartella `programs/` a essere un link a una cartella esterna, il
+    // confronto fra due `realpath` COERENTI fra loro non se ne accorge, e i
+    // documenti finiscono fuori. Qui la difesa e' `assertInsidePrograms`, che
+    // confronta il percorso reale della directory con quello reale di
+    // `programsDir`: entrambi risolvono fuori, e il confronto regge.
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-progs-"))
+    const fuori = mkdtempSync(path.join(tmpdir(), "bbdocs-progs-out-"))
+    const programs = path.join(root, "programs")
+    symlinkSync(fuori, programs)
+    mkdirSync(path.join(fuori, "bcny"), { recursive: true })
+    const prev = process.env.CYBERSTRIKE_HOME
+    process.env.CYBERSTRIKE_HOME = root
+    try {
+      let rifiutato = false
+      try {
+        writeProgramDocs(base, path.join(programs, "bcny"), programs)
+      } catch {
+        rifiutato = true
+      }
+      expect(rifiutato).toBe(true)
+      expect(readdirSync(fuori).filter((f) => f === "AGENTS.md" || f === "scope.md")).toEqual([])
+    } finally {
+      if (prev === undefined) delete process.env.CYBERSTRIKE_HOME
+      else process.env.CYBERSTRIKE_HOME = prev
+      rmSync(root, { recursive: true, force: true })
+      rmSync(fuori, { recursive: true, force: true })
+    }
+  })
+
+  test("sostituire la dir del programma prima della scrittura: rifiutata, non scritta fuori", () => {
+    // Difetto RIPRODOTTO dal quarto subagent (deleg_b41be483): sostituendo
+    // `programs/<prog>` con un symlink verso fuori, la scrittura usciva.
+    // Qui si misura la DIFESA di perimetro: il percorso non-regolare viene
+    // rifiutato, e niente viene scritto fuori. (La proprieta' dell'ancoraggio,
+    // che e' cio' che chiude la corsa, si misura nel test seguente.)
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-anchor-"))
+    const fuori = mkdtempSync(path.join(tmpdir(), "bbdocs-anchor-out-"))
+    const programs = path.join(root, "programs")
+    const directory = path.join(programs, "bcny")
+    mkdirSync(directory, { recursive: true })
+    const prev = process.env.CYBERSTRIKE_HOME
+    process.env.CYBERSTRIKE_HOME = root
+    try {
+      writeProgramDocs(base, directory, programs)
+      // la dir e' ora un link a fuori: una scrittura per NOME finirebbe la'
+      rmSync(directory, { recursive: true, force: true })
+      symlinkSync(fuori, directory)
+      // DEVE essere rifiutata: qui il percorso testuale risolve fuori
+      expect(() => writeProgramDocs(base, directory, programs)).toThrow()
+      expect(readdirSync(fuori).filter((f) => f === "AGENTS.md" || f === "scope.md")).toEqual([])
+    } finally {
+      if (prev === undefined) delete process.env.CYBERSTRIKE_HOME
+      else process.env.CYBERSTRIKE_HOME = prev
+      rmSync(root, { recursive: true, force: true })
+      rmSync(fuori, { recursive: true, force: true })
+    }
+  })
+
+  test("l'ANCORAGGIO regge nei due casi reali di sostituzione del nome", () => {
+    // Questa e' la proprieta' su cui poggia `withAnchoredDir`, e va misurata
+    // DIRETTAMENTE: se l'OS non la garantisse, la difesa sarebbe illusoria.
+    // Due casi distinti, perche' il kernel si comporta diversamente:
+    //
+    //   1. RENAME (la dir esiste ancora, sotto un altro nome): `/proc/self/fd/N`
+    //      continua a puntare all'inode aperto, quindi la scrittura resta
+    //      dentro. MISURATO.
+    //   2. DELETE + symlink (il caso dell'harness del subagent): l'inode e'
+    //      scollegato e il percorso magico muore — la scrittura fallisce con
+    //      ENOENT. Fail-closed: nega, non fugge. MISURATO.
+    //
+    // In NESSUNO dei due casi si scrive fuori: e' questo che il test pretende.
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-fd-"))
+    const fuori = mkdtempSync(path.join(tmpdir(), "bbdocs-fd-out-"))
+    const dir = path.join(root, "programs", "bcny")
+    mkdirSync(dir, { recursive: true })
+    try {
+      // --- caso 1: rename
+      const fd1 = openSync(dir, "r")
+      try {
+        const anchor = `/proc/self/fd/${fd1}`
+        if (!existsSync(anchor)) return // piattaforma senza /proc: niente ancoraggio
+        renameSync(dir, path.join(root, "spostata"))
+        symlinkSync(fuori, dir)
+        writeFileSync(path.join(anchor, "uno.txt"), "dentro")
+      } finally {
+        closeSync(fd1)
+      }
+      expect(existsSync(path.join(fuori, "uno.txt"))).toBe(false)
+      expect(existsSync(path.join(root, "spostata", "uno.txt"))).toBe(true)
+
+      // --- caso 2: delete + symlink (fail-closed)
+      rmSync(dir, { force: true })
+      mkdirSync(dir, { recursive: true })
+      const fd2 = openSync(dir, "r")
+      try {
+        const anchor = `/proc/self/fd/${fd2}`
+        rmSync(dir, { recursive: true, force: true })
+        symlinkSync(fuori, dir)
+        // o lancia (ENOENT), o scrive dentro: mai fuori
+        try {
+          writeFileSync(path.join(anchor, "due.txt"), "dentro")
+        } catch {}
+      } finally {
+        closeSync(fd2)
+      }
+      expect(existsSync(path.join(fuori, "due.txt"))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+      rmSync(fuori, { recursive: true, force: true })
+    }
+  })
+
+  test("nessun file .tmp orfano dentro il progetto dopo un fallimento", () => {
+    // Difetto RIPRODOTTO dal quarto subagent: se la `rename` fallisce, la
+    // pulizia cercava il temporaneo per percorso risolto altrove e lo lasciava
+    // orfano. Ora la pulizia usa l'ancora, quindi il nome e' quello vero.
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-tmpjunk-"))
+    const programs = path.join(root, "programs")
+    const directory = path.join(programs, "bcny")
+    mkdirSync(directory, { recursive: true })
+    // `AGENTS.md` come DIRECTORY: la `rename` sopra una directory non vuota
+    // fallisce, che e' il caso che faceva restare il .tmp
+    mkdirSync(path.join(directory, "AGENTS.md"))
+    writeFileSync(path.join(directory, "AGENTS.md", "occupato"), "x")
+    const prev = process.env.CYBERSTRIKE_HOME
+    process.env.CYBERSTRIKE_HOME = root
+    try {
+      try {
+        writeProgramDocs(base, directory, programs)
+      } catch {}
+      const residui = readdirSync(directory).filter((f) => f.endsWith(".tmp"))
+      expect(residui).toEqual([])
+    } finally {
+      if (prev === undefined) delete process.env.CYBERSTRIKE_HOME
+      else process.env.CYBERSTRIKE_HOME = prev
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("programma FRATELLO: il bypass trovato dal quinto subagent (deleg_3b5e0b49)", () => {
+  test("link a un altro programma: rifiutato, i suoi documenti NON vengono sovrascritti", () => {
+    // Difetto RIPRODOTTO: il controllo confrontava solo il PREFISSO. Un link
+    // `programs/bcny -> programs/other` resta sotto `programs/`, quindi
+    // passava — e i documenti di `other` venivano riscritti con i dati di
+    // `bcny`. Non e' una fuga fuori dal progetto, e' una violazione del
+    // perimetro del PROGRAMMA, che e' il confine vero.
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-sib-"))
+    const programs = path.join(root, "programs")
+    const other = path.join(programs, "other")
+    mkdirSync(other, { recursive: true })
+    const agentsAltrui = path.join(other, "AGENTS.md")
+    const scopeAltrui = path.join(other, "scope.md")
+    writeFileSync(agentsAltrui, "# AGENTS di other - non toccare\n")
+    writeFileSync(scopeAltrui, "# Scope di other - non toccare\n")
+    symlinkSync(other, path.join(programs, "bcny"))
+    const prev = process.env.CYBERSTRIKE_HOME
+    process.env.CYBERSTRIKE_HOME = root
+    try {
+      let rifiutato = false
+      try {
+        writeProgramDocs(base, path.join(programs, "bcny"), programs)
+      } catch {
+        rifiutato = true
+      }
+      expect(rifiutato).toBe(true)
+      // La prova che conta non e' il rifiuto ma l'INTEGRITA' dei file altrui:
+      // un rifiuto che lasciasse comunque scrivere sarebbe un falso verde.
+      expect(readFileSync(agentsAltrui, "utf8")).toBe("# AGENTS di other - non toccare\n")
+      expect(readFileSync(scopeAltrui, "utf8")).toBe("# Scope di other - non toccare\n")
+    } finally {
+      if (prev === undefined) delete process.env.CYBERSTRIKE_HOME
+      else process.env.CYBERSTRIKE_HOME = prev
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("forma di CHIAMATA PRODUCTION: il terzo argomento e' la ROOT, non programs/", () => {
+  // Difetto RIPRODOTTO dal sesto subagent (deleg_014a4036). Il chiamante real e'
+  // `bb.ts:861`: `writeProgramDocs(config, directory, path.dirname(programsRoot))`
+  // — quindi il terzo argomento e' la root di `bugbounty`, NON `programs/`.
+  // TUTTI i test precedenti passavano `programs/`, cioe' non assomigliavano
+  // alla realta': potevano essere verdi mentre il difetto era aperto.
+  // Qui la forma e' letteralmente quella di `bb.ts`, e il difetto e' chiuso.
+  test("programs/ come symlink verso una cartella SORELLA: rifiutato con la forma production", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-prodchain-"))
+    try {
+      const bb = path.join(root, "bugbounty")
+      const programs = path.join(bb, "programs")
+      const sorella = path.join(bb, "archive")
+      const directory = path.join(programs, "victim")
+      const fuori = path.join(sorella, "victim")
+      mkdirSync(fuori, { recursive: true })
+      symlinkSync(sorella, programs, "dir")
+      expect(() => writeProgramDocs(base, directory, bb)).toThrow(/symlink/)
+      // niente scritto nella sorella
+      expect(existsSync(path.join(fuori, "AGENTS.md"))).toBe(false)
+      expect(existsSync(path.join(fuori, "scope.md"))).toBe(false)
+      expect(existsSync(path.join(fuori, "tmp"))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("la forma production LEGITTIMA (root come terzo argomento) funziona", () => {
+    // Se la guardia avesse imposto una profondita' fissa avrebbe rotto
+    // questo caso: `programs/<nome>` sono DUE livelli sotto la root.
+    const root = mkdtempSync(path.join(tmpdir(), "bbdocs-prodok-"))
+    try {
+      const bb = path.join(root, "bugbounty")
+      const programs = path.join(bb, "programs")
+      const directory = path.join(programs, "ok")
+      mkdirSync(directory, { recursive: true })
+      writeProgramDocs(base, directory, bb)
+      expect(existsSync(path.join(directory, "AGENTS.md"))).toBe(true)
+      expect(existsSync(path.join(directory, "scope.md"))).toBe(true)
+      expect(existsSync(path.join(directory, "tmp"))).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })

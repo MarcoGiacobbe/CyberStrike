@@ -29,8 +29,13 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 HOST_SHARE="$HOME/.local/share/cyberstrike"
-VOL_SHARE="cyberstrike-share"
-VOL_CFG="cyberstrike-config"
+# I volumi sono sovrascrivibili dall'esterno (`${VOL_CFG:-nome}`) perche' i
+# test di verifica devono poter montare un volume usa-e-getta e ispezionare
+# QUELLO, non un volume omonimo lasciato intatto: un controllo di integrita'
+# fatto sul volume sbagliato certifica un volume che il test non ha toccato
+# (difetto segnalato dal subagent deleg_cb90184f).
+VOL_SHARE="${VOL_SHARE:-cyberstrike-share}"
+VOL_CFG="${VOL_CFG:-cyberstrike-config}"
 BB_ROOT="${CYBERSTRIKE_HOME:-$HOME/.cyberstrike}/bugbounty"   # config dei programmi + programs/
 PROGRAMS="$BB_ROOT/programs"
 IMAGE="cyberstrike-bounty:sandbox"
@@ -439,6 +444,28 @@ else
   KEEP_CMD="$INNER_SCRIPT"
 fi
 
+# V17: la configurazione del container e' montata in SOLA LETTURA (piu' sotto,
+# `csconfig:ro`). Dentro quel volume c'e' solo `cyberstrike.json` — il provider
+# e il modello. Nessuna credenziale, e `credentials.json` non e' montata.
+#
+# Perche' chiuderla. Il perimetro di scrittura dell'agente e' applicativo
+# (ruleset + gate dei tool), quindi vale per i path che i tool riescono a
+# ispezionare: `rm -rf /tmp/x`, `echo > /etc/x`, `curl -o` vengono negati. Un
+# comando NON ispezionabile (`python3 -c "open(...)"`, `bash -c '...'`) passa
+# invece dal canale dell'utente, e un "sempre" lo rende permanente. Qui la
+# scrittura e' negata dal kernel: non e' una promessa dello strumento, e' il
+# filesystem. Il volume persiste fra un avvio e l'altro, quindi una modifica
+# sopravviverebbe alla sessione e cambierebbe il comportamento della
+# successiva — esattamente il danno che il perimetro promette di non poter
+# causare.
+#
+# `bb hunt` continua a funzionare. `global/index.ts:30` esegue
+# `fs.mkdir(Global.Path.config, { recursive: true })`, cioe' `mkdir -p`, e la
+# sottodirectory `cyberstrike` esiste gia' nel volume: misurato, `mkdir -p` su
+# una directory gia' esistente NON lancia nemmeno in sola lettura (rc=0). Senza
+# `-p` lancerebbe EEXIST e l'avvio morirebbe dentro `Promise.all`, che non
+# cattura. Il test end-to-end di `bb hunt` in verify-v17-config-readonly.sh
+# copre questa riga: se il percorso cambiasse, diventerebbe rosso.
 docker run "${TTY_ARGS[@]}" "${RUN_FLAGS[@]}" --name "$NAME" \
   "${PASS_ENV[@]}" \
   -e CS_CMD="$CS_CMD" \
@@ -451,7 +478,7 @@ docker run "${TTY_ARGS[@]}" "${RUN_FLAGS[@]}" --name "$NAME" \
   -v "$REPO":/app:ro \
   ${BB_MOUNTS[@]+"${BB_MOUNTS[@]}"} \
   -v "$VOL_SHARE":/home/hunter/csdata:rw \
-  -v "$VOL_CFG":/home/hunter/csconfig:rw \
+  -v "$VOL_CFG":/home/hunter/csconfig:ro \
   -e HOME=/home/hunter \
   -e XDG_CONFIG_HOME=/home/hunter/csconfig \
   -e XDG_DATA_HOME=/home/hunter/csdata \

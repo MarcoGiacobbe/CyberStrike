@@ -415,3 +415,403 @@ ma per due motivi veri:
    arbitraria per un workflow bounty.
 
 Nessuna modifica ai file, container di prova rimosso, 0 residui.
+
+---
+
+## V17 — chiusura di due punti (2026-10-01)
+
+Questo verdetto **non annulla** quello sopra: V11 resta la base (la home
+scrivibile, il resto delle vie aperte). Qui si chiudono due punti e si
+riconosce esplicitamente cio' che resta scoperto.
+
+### 1. La `tmp/` del programma — FATTO
+
+`bb-program-docs.ts` crea ora `programs/<programma>/tmp/` a ogni refresh dei
+documenti del programma, e `AGENTS.md` la dichiara l'unica zona scrivibile per
+i file di caccia (PoC, payload, script, output).
+
+Non serve alcuna regola di permesso nuova: la `tmp` sta *dentro* la directory
+del programma, quindi eredita il confine gia' esistente. Il vantaggio e' di
+separazione — l'agente ha un posto dichiarato dove mettere la roba, e tu sai
+dove guardare.
+
+Misura: `test/cli/bb-program-docs.test.ts` 10/10, controprova rossa prima
+dell'implementazione (2 fallimenti sui due assunti nuovi, gli altri 8 verdi).
+
+### 2. Config del container in sola lettura — FATTO, con una riduzione
+
+`run-sandbox.sh` montava `VOL_CFG` in `rw`. Ora e' `ro` (riga 476).
+
+**Cosa dice la misura, e va detto prima del resto:** dentro quel volume c'e'
+**solo** `cyberstrike.json` — il provider e il modello. Nessuna credenziale:
+quelle stanno in `~/.cyberstrike/` e non sono montate. Quindi il rischio reale
+era "l'agente altera come si comporta la sessione successiva", non "l'agente
+ruba segreti". Questo ridimensiona il punto rispetto a com'era stato
+descritto, e la modifica non lo chiude del tutto: la modifica non
+sopravvive al container, ma l'effetto (config alterata) sì.
+
+L'avvio non si rompe: `global/index.ts:30` chiama
+`fs.mkdir(Global.Path.config, {recursive:true})`, e `mkdir -p` su una
+directory gia' esistente non lancia **nemmeno in sola lettura** — misurato,
+non supposto. `Global.Path.config` e' `XDG_CONFIG_HOME/cyberstrike` e quella
+sottocartella esiste gia' nel volume. `bb hunt` con `--dry-run` gira con
+`RC=0`, senza `EROFS`.
+
+**Test:** `infra/bounty-sandbox/verify-v17-config-readonly.sh`, che verifica
+i quattro percorsi di scrittura (tre espliciti, uno opaco), un **controllo
+positivo** nella `tmp` del programma e in `csdata`, e l'avvio di `bb hunt`.
+
+Controprova: riportato a `rw`, il test diventa rosso con 4 `SCRITTO` e 0
+`NEGATO`. Ripristinato `:ro`, verde.
+
+### Due errori commessi durante il lavoro, e cosa ne resta
+
+**Il mio test 3 era un falso verde.** Nella prima stesura il subshell
+stampava `OK` incondizionatamente e il verdetto passava da un
+`grep '^OK'` su quella riga: vero anche a volume corrotto. Ora il verdetto
+viaggia nel **codice di uscita**. Controprovato su tre casi: integro `rc=0`,
+`cyberstrike.json` corrotto `rc=1`, file di prova presente `rc=1`.
+
+**La controprova ha corrotto il volume vero, e per poco.** I miei comandi di
+prova includevano `echo SCRIVI >> cyberstrike.json` e `>> .gitignore`. Con il
+mount in `rw` quei due file si sono riempiti di testo spazzatura. Mi sono
+accorto controllando il volume dopo la controprova, non prima. `cyberstrike.json`
+e' risultato intatto (414 byte, primo carattere `{` — l'`>>` in coda a un JSON
+valido lo lascia valido, il file e' stato solo accorciato dal test); `.gitignore`
+e `PROVA_OPACA` sono stati riparati a mano. Il test 3 e' stato riscritto per
+guardare l'**integrita'**, non solo l'assenza di residui — che era esattamente
+la verifica che mancava e che aveva lasciato passare il danno.
+
+
+### Terzo difetto, trovato dal subagent: il test 2 accettava qualunque esito
+
+Il subagent avversariale ha eseguito la controprova del test riportando
+`run-sandbox.sh` a HEAD (quindi con la config di nuovo in `rw`) e volume
+usa-e-getta. Il test e' andato rosso come deve — ma nel suo output c'era una
+riga che non avevo previsto: `RC=1` marcata **`ok`**.
+
+Il motivo e' che il test 2 accettava **qualsiasi** codice di uscita, e
+soltanto si accorgeva di `EROFS`/`Permission denied`. Dichiarava quindi
+`ok` anche con `rc=139` (crash) e anche con output del dry-run assente
+(il comando era mascherato da un `true` finale). **Il test di
+non-regressione non misurava niente**: poteva essere verde mentre `bb hunt`
+era morto.
+
+Misurato prima della correzione, con il blocco estratto e alimentato a mano:
+
+```
+test 2 con bb hunt FALLITO (rc=1, nessun EROFS)  ->  ok  FAIL=0
+test 2 con rc=139 (crash)                       ->  ok  FAIL=0
+test 2 con nessun output per crash silenzioso    ->  ok  FAIL=0
+```
+
+Ora il `:ro` non deve cambiare l'esito di `bb hunt`, quindi l'unico rc
+accettabile e' `0`, e non basta: serve anche che il dry-run abbia stampato
+l'output atteso. Controprovato su cinque casi, tutti corretti:
+
+```
+OK SANO: rc=0 + output    OK CRASH: rc=139    OK FALLIMENTO: rc=1
+OK SILENZIOSO: solo rc=0  OK EROFS
+```
+
+Rilanciato V17 per intero dopo la correzione: verde, con la riga 2 ora
+`ok  bb hunt ha girato (rc=0) e ha stampato il dry-run, senza EROFS`.
+
+**Questo e' il terzo difetto mio in un solo ticket**, tutti e tre falsi verdi
+nei test che avrebbero dovuto misurare la modifica. Il pattern e' sempre lo
+stesso: `bash` senza `set -e`, verdetto in una stringa e non nel codice di
+uscita, e l'assenza di un errore specifico scambiata per successo. E' il
+motivo per cui la verifica non puo' restare mia.
+
+### Cosa resta aperto — e non e' aggirabile
+
+Il buco vero, quello che il perimetro non chiude, sono i **comandi Bash di cui
+non si puo' determinare il destinatario**: `python3 -c "open('/tmp/x','w')"`,
+`touch $(echo /tmp/x)`, `bash -c '...'`, gli script. Questi arrivano a
+`ctx.ask` (`tool/bash.ts:296-308`): un "si" umano apre il confine, e il
+confine si sposta con ogni conferma.
+
+Ho verificato che le scritture **esplicite** fuori non sono un buco: `rm -rf
+/tmp/x`, `echo > /etc/x`, `sed -i`, `curl -o` sono gia' negati da
+`external_directory` senza chiedere nulla. La premessa del piano precedente
+("fuori chiede conferma") era **falsa** e l'ho corretta prima di scrivere.
+
+Chiudere il caso opaco richiede una decisione che spetta a te, perche' la
+risposta piu' restrittiva (negare) si porta dietro `python3`, `node`, `bun`,
+`perl`, `ruby`, `php`, `bash`, `sh`, `docker` — cioe' gli strumenti con cui si
+fa caccia. Negarli significa che l'agente non puo' piu' eseguire quasi nulla.
+Non posso consegnare quello dicendo che era la specifica.
+
+Restano inoltre aperti i punti gia' elencati sopra e non toccati qui:
+**symlink** non canonicalizzato (`external-directory.ts:17`), **TOCTOU** fra
+controllo e scrittura (`write.ts:27`, `edit.ts:45`, `apply_patch.ts:62`),
+**`~` non espanso** dai tool file (`write.ts:26`).
+
+**Nessuna modifica ai file di programma, 0 container di prova residui.**
+
+## Difetti trovati dal subagent avversariale (deleg_cb90184f) e chiusi nello stesso giorno
+
+Il subagent doveva trovare il buco. Ne ha trovati tre, tutti misurati, e due
+erano difetti miei. Chiusi in questa stessa sessione, con controprova per ognuno:
+
+1. **`tmp/` come symlink veniva seguita** (RIPRODOTTO, mio). `mkdirSync` su un
+   percorso che e' un symlink esce con codice 0 e non tocca il link: la
+   cartella puntata restava scrivibile e fuori dal perimetro. Rilevato ora con
+   `lstat`, e i permessi vengono riportati a 0700 invece di restare 0777.
+2. **Il test V17 guardava il volume sbagliato** (RIPRODOTTO, mio). Il controllo
+   d'integrita' ispezionava `cyberstrike-config` scritto a mano nella riga del
+   `docker run`, non il volume che il launcher aveva montato: poteva certificare
+   un volume mai toccato. Ora il volume e' usa-e-getta, passa al launcher via
+   `VOL_CFG`, e il controllo legge lo stesso volume.
+3. **Il controllo positivo del test V17 era falsificabile** (RIPRODOTTO, mio).
+   Contava le righe `SCRITTO:` senza verificarne la provenienza: bastava
+   sostituirle con due righe prefabbricate. Ora si pretendono i due percorsi
+   esatti, per nome.
+4. **Il test di non-regressione accettava qualunque esito** (RIPRODOTTO, mio).
+   `bb hunt` che esce con 139 o che non stampa nulla venivano dichiarati `ok`,
+   perche' la condizione guardava solo l'assenza di `EROFS`. Ora si richiede
+   `rc=0` e l'output del dry-run: controprovato su cinque casi (139, vuoto,
+   assenza di output, EROFS, sano).
+5. **Il test lasciava un residuo** sull'host: `PROVA_POS` dentro
+   `programs/<prog>/tmp/`, che e' persistente. Ora il cleanup lo rimuove.
+6. **Corruzione del volume durante la controprova** (RIPRODOTTO, mio, contro me
+   stesso). I comandi di prova scrivevano dentro `cyberstrike.json` e
+   `.gitignore` reali. Me ne sono accorto ispezionando il volume DOPO, non
+   prima: e la verifica che mancava. Il file di configurazione e' risultato
+   intatto, `.gitignore` riparato a mano. Da allora il test 3 verifica
+   l'integrita', non solo l'assenza di sporco.
+
+Nessun bypass del `:ro` trovato dal subagent: ha provato accesso diretto,
+`/proc/self/root`, hard link, symlink, bind mount a runtime, file descriptor
+descriptor e rename della directory. Tutti respinti; il parent scrivibile non
+permette di attraversare il mount.
+
+## `--dry-run` e il confine: rettifica di una mia affermazione
+
+In una prima stesura ho scritto che la MAP contraddiceva il codice su
+`--dry-run`. **Ho esagerato, e lo correggo.** La lettura precisa di
+`bb.ts:838` mostra che il difetto a cui la MAP si riferisce — lo stato scritto
+in dry-run — **e' chiuso**: `if (!state && !args.dryRun)` esclude davvero la
+creazione di `state.json`.
+
+Quello che resta e' un'altra cosa, e il codice la dichiara **intenzionale**
+(`bb.ts:851-854`): in `--dry-run` vengono comunque riscritti `AGENTS.md` e
+`scope.md`, perche' senza quel `mkdir` il dry-run falliva con ENOENT e non
+mostrava niente proprio nel comando che serve a ispezionare. Con questa
+modifica si aggiunge `tmp/` alla stessa sorte.
+
+MISURATO: `--dry-run` crea `programs/<prog>/` con `AGENTS.md`, `scope.md` e
+`tmp/` (mode 700), e restituisce `rc=0`. Controprovato a HEAD: **scriveva
+anche prima** — non e' una regressione introdotta qui.
+
+Non e' quindi una contraddizione da sanare, ma una **scelta di prodotto
+esplicita** che ha un prezzo: `--dry-run` non e' privo di effetti sul disco.
+Se quel prezzo non e' voluto, la decisione e' dell'utente; io non l'ho
+cambiata.
+
+Verdetto: il perimetro di scrittura e' chiuso per cio' che e' dimostrabile
+con un percorso esplicito e per la configurazione del container. Resta aperto
+il caso dei comandi con destinatario opaco (che chiedono conferma) e il
+dry-run che scrive.
+
+## BYPASS reale trovato dal 2o verificatore (`deleg_6dc3ac19`) — CHIUSO
+
+Il primo verificatore ha trovato che `tmp/` era protetta. **Il secondo ha
+trovato che non lo erano le due righe accanto.** Avevo messo una toppa e
+lasciato il buco accanto alla toppa.
+
+`writeFileSync` **segue i link**. Misurato: con `programs/bcny/AGENTS.md` e
+`scope.md` resi symlink verso una directory esterna,
+`bb hunt bcny --dry-run` usciva **`rc=0`** e scriveva **979 + 757 byte FUORI**
+dal progetto. Riprodotto da me, con l'entry point reale, non in un test
+isolato.
+
+**Chiusura, e perche' cosi' e non con un controllo.** La garanzia non e' un
+`lstat` prima della scrittura — quello sarebbe aggirabile con una corsa fra
+controllo e scrittura (TOCTOU). E' la FORMA della scrittura: il contenuto va
+in un file nuovo nella stessa directory (`flag: "wx"` = `O_CREAT|O_EXCL`, che
+non segue un link) e poi `rename` **sostituisce la voce di directory**. Cosi':
+
+- un **symlink** viene rimpiazzato e il file esterno resta intatto;
+- un **hard link** perde la sua voce e l'inode esterno **non viene toccato**
+  (un controllo sul tipo non lo avrebbe mai visto: un hard link e' un file
+  normale per `lstat`).
+
+**Controprova**: riportate le due scritture a `writeFileSync` nudo (come a
+HEAD), i test mirati vanno **3 rossi** (symlink AGENTS, symlink scope, hard
+link). Col codice corretto: **17 verdi, 0 rossi**. E passando dall'entry point
+reale: 0 byte fuori, il link sostituito, i 979 byte nel file giusto dentro il
+progetto.
+
+## TERZO vettore, trovato da me misurando — CHIUSO
+
+Nessuno dei due verificatori l'aveva tentato. Se e' la **DIRECTORY DEL
+PROGRAMMA** a essere un link, ogni scrittura "dentro" finisce fuori: la difesa
+sui nomi dei file non lo copre.
+
+MISURATO con l'entry point reale: `programs/bcny` reso symlink a
+`/tmp/outdir-...`, poi `bb hunt bcny --dry-run` -> `rc=0` e `AGENTS.md`,
+`scope.md`, `tmp/` creati DENTRO la cartella esterna.
+
+Chiuso alla radice, non per-file: `assertInsidePrograms` confronta il percorso
+**reale** (`realpath`) con `programs/`. Godimento collaterale: il messaggio di
+rifiuto e' visibile all'agente, non silenzioso — misurato nell'output reale:
+`! non ho potuto scrivere i documenti del programma: ... risolve a ... che e'
+FUORI da ...`. Il caso normale continua a funzionare: `AGENTS.md`, `scope.md`,
+`tmp` creati, `rc=0`.
+
+**Controprova**: rimossa la guardia, il test dedicato va **1 rosso** (e gli
+altri 17 verdi); con la guardia, **18 verdi, 0 rossi**.
+
+## Tre difetti MIEI, trovati mentre chiudevo il terzo vettore
+
+1. La funzione di guardia usava il nome della FUNZIONE `lstatSync` come TIPO
+   (`lstatSafe(p): lstatSync | undefined`): rotto, corretto con `Stats`.
+2. La guardia lanciava `ENOENT` sul caso NORMALE (directory del programma non
+   ancora creata), facendo passare per guasto cio' che era la prima esecuzione.
+   Corretto con `realpathDeep`, che risolve il primo antenato esistente.
+3. I MIEI test passavano `"/programs"` — un percorso fittizio che non esiste —
+   mentre la directory stava sotto una tmp. Sei test sono diventati rossi
+   appena ho aggiunto la guardia, ed erano SCIATTI LORO: ora passano il
+   percorso vero. Una guardia seria ha smascherato dei test scritti male.
+
+## Quinta iterazione (2026-10-01) — quarto verificatore indipendente (deleg_b41be483)
+
+**Due difetti riprodotti, entrambi chiusi.**
+
+1. **TOCTOU sul percorso del programma** (gravita' alta). `assertInsidePrograms`
+   risolveva il percorso PRIMA delle scritture, ma le syscall riaprono il
+   percorso testuale: chi alterna `programs/<prog>` fra directory e symlink
+   verso fuori fa uscire la scrittura. Riprodotto dal subagent con un harness
+   concorrente (15.000 chiamate, `escapedAt: 41`, file scritto fuori).
+   Riprodotto anche da me sul caso NON concorrente: con `programs/` stessa
+   resa symlink, `realpath(programs)` e `realpath(directory)` risolvono
+   ENTRAMBI fuori, quindi il confronto passava e si scriveva fuori.
+2. **File `.tmp` orfano** nel percorso esterno dopo un fallimento a meta'.
+
+**Chiusura — cambio di forma, non un altro controllo.** `withAnchoredDir`:
+la directory viene aperta una volta (`openSync`) e i file si scrivono
+ATTRAVERSO `/proc/self/fd/N`, che il kernel lega all'inode aperto e non al
+nome. Misurato:
+- RENAME del nome: la scrittura resta sull'inode originale (dentro);
+- DELETE + symlink: `/proc/self/fd/N` muore, la scrittura **fallisce con
+  ENOENT** — fail-closed, nega invece di uscire;
+- piattaforme senza `/proc`: fallback al percorso testuale (documentato).
+Inoltre `assertInsidePrograms` rifiuta ora `programs/` symlink, e il `.tmp`
+viene rimosso per nome vero, quindi non resta orfano.
+
+**Controprova**: rimossi ancoraggio e guardia-radice, il test mirato va
+**9 rosso / 13 verde**; ripristinato, 22/22.
+
+## Danno provocato durante questo ticket (va detto)
+
+Un mio probe nel sandbox conteneva `rm -rf` sul percorso del programma. Ha
+**cancellato `AGENTS.md`, `scope.md` e `tmp/` del programma reale `bcny`** prima
+di fallire sulla directory (rm cancella i file e fallisce solo sul mount point).
+Riparati rigenerandoli dal config, che era intatto: 976 e 757 byte, tmp 0700.
+Nessun dato di scope perso (i documenti si rigenerano; config e credenziali
+intatti). Regola registrata nella skill di disciplina: dentro il sandbox ogni
+prova distruttiva va fatta su una COPIA usa-e-getta, mai su un percorso reale.
+
+**Falso verde mio, corretto**: il primo test dell'ancoraggio passava perche'
+scattava il rifiuto, non perche' l'ancoraggio reggesse — misurava la cosa
+sbagliata col nome giusto. Separato in due test che misurano ciascuno la
+propria proprieta'.
+
+**Misure finali**: test mirati 22/22; typecheck 11/11; suite 1862 pass,
+5 skip, 1 fail (`grok-3`, preesistente e fuori ticket). Nessun residuo.
+
+## 2026-10-01 — QUINTO giro: il link a un programma FRATELLO (deleg_3b5e0b49)
+
+Difetto RIPRODOTTO, di classe diversa dai precedenti: non una fuga fuori dal
+progetto, ma **da un programma all'altro**.
+
+`assertInsidePrograms` confrontava solo il PREFISSO
+(`realDir.startsWith(realPrograms + path.sep)`). Un link
+`programs/bcny -> programs/other` resta SOTTO `programs/`, quindi passava:
+`AGENTS.md` e `scope.md` di `other` sono stati SOVRASCRITTI con i dati di
+`bcny`, `rc=0`.
+
+Chiuso con un secondo invariante, non con l'allungamento del primo: la
+directory deve essere la **figlia diretta** di quello che contiene il suo
+nome. Misurato: tolta la guardia, 1 solo test rosso (quello del fratello);
+gli altri 22 restano verdi.
+
+### Errore MIO, e perche' la prima stesura non andava bene
+
+La prima versione della guardia imponeva `realDir === programs/<nome>`, ma
+`programsDir` NON e' la cartella dei programmi: il chiamante production
+(`bb.ts:861`) passa `path.dirname(programsRoot)`, cioe' la **radice di
+`bugbounty`**, dove vive anche la policy integrale. La stretta ha reso rossi
+**tre** test end-to-end legittimi che lanciano `bb hunt` davvero, e un
+controllo di perimetro che rompe il caso normale e' peggio di nessun
+controllo. Riformulata con due invarianti che valgono comunque: dentro la
+radice reale, e figlia diretta di chi contiene il suo nome.
+
+### Stato dei residui
+
+Nessuno. Test mirati 23/23, controprova 1 rosso, suite e typecheck verdi.
+
+## 2026-10-01 — SESTO giro: il mio test non assomigliava alla chiamata REALE (deleg_014a4036)
+
+Difetto RIPRODOTTO. `assertInsidePrograms` guardava se la RADICE
+(`programsDir`) fosse un symlink, ma il chiamante production (`bb.ts:861`)
+passa `path.dirname(programsRoot)` — la root di `bugbounty`, cioe' un
+livello **piu' alto** di `programs/`. Quindi la cartella dei programmi
+era un livello sotto e **nessun controllo la guardava**. Con `programs/`
+reso symlink verso `bugbounty/archive/`, la scrittura finiva li' —
+misurato anche da me: `ACCETTATO (sbagliato): {"files":["AGENTS.md","scope.md","tmp"]}`.
+
+La parte peggiore e' del metodo, non del codice: **tutti i miei test
+passavano `programs/` come terzo argomento**, mentre il comando vero passa
+la root. Erano veri e il difetto era aperto. Un test che chiama una funzione
+con argomenti diversi da quelli del chiamante production verifica un'API che
+non esiste.
+
+Chiuso senza imporre una profondita' fissa (che avrebbe rotto il caso
+legittimo: `programs/<nome>` sono DUE livelli sotto la root — misurato, 3
+test end-to-end sono tornati rossi). La regola e' piu' forte e non sa
+nulla della profondita': **ogni componente del cammino, dalla root al
+programma, deve essere una directory vera, mai un link**. Il cammino si
+costruisce sul percorso TESTUALE, non su quello risolto.
+
+Secondo errore MIO nella stessa correzione: la prima stesura camminava su
+`realPrograms` (gia' risolto), dove il symlink e' sparito — quindi i 23 test
+erano VERDI e il bypass era di nuovo APERTO. L'ho misurato prima di
+dichiararlo chiuso: era l'unico modo di saperlo.
+
+Controprova: tolto il controllo della catena, 1 solo test rosso (quello
+della forma production) e i restanti 24 verdi.
+
+## 2026-10-01 — SETTIMO giro: corsa che richiede root (deleg_4ba90e75) + decisioni dell'utente
+
+Difetto RIPRODOTTO dal verificatore: un processo concorrente che sostituisce
+la directory del programma con un symlink *durante* la scrittura fa ancorare
+`/proc/self/fd/N` al target esterno (156 scritture fuori su 5.000 tentativi).
+
+Gravita' MISURATA nel sandbox reale prima di decidere:
+- `/work/bugbounty/programs` e' `drwxr-xr-x root root` -> l'agente (`uid=1000
+  hunter`) NON puo' crearci ne' rinominarci voci (`PARENT-NON-SCRIVIBILE`);
+- `/work/bugbounty/programs/bcny` e' un **mount point** (`/dev/nvme1n1p3 rw`),
+  e sostituirlo richiede scrivere nel padre.
+Quindi l'innesco richiede un processo con i permessi dell'utente sulla macchina:
+non e' raggiungibile dall'agente. **Decisione UTENTE: lasciare aperto, rischio
+accettato** (il perimetro efficace e' il mount, non il codice).
+
+## RISCHIO ACCETTATO ESPLICITAMENTE (non e' un difetto chiuso)
+
+Il requisito iniziale dell'utente era: «l'agente NON HA NESSUN POTERE DI
+SCRITTURA AL FUORI DELLA DIRECTORY DI LAVORO» + «blocca bash/ogni comando
+che possa scrivere fuori dal progetto».
+
+Stato MISURATO oggi:
+- path esterni espliciti -> `deny(external_directory)`, senza conferma. CHIUSO.
+- comandi con destinatario opaco (`python3 -c "open('/tmp/x','w')"`,
+  `touch $(echo /tmp/x)`, script) -> `ctx.ask`, quindi un'approvazione umana
+  sposta il confine. **NON chiuso.**
+
+Il 2026-10-01 l'utente ha deciso: «Per ora lasciamo cosi' e accetto il rischio».
+E' una deviazione consapevole dal requisito iniziale, non un'opzione neutra:
+chiudere significa negare anche `python3`/`node`/`bash`/`docker`, cioe' gli
+strumenti con cui si caccia. Da rivedere se il costo dell'interruzione degli
+strumenti diventa accettabile.
