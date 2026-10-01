@@ -33,6 +33,7 @@ import {
 import { syncProgram } from "@cyberstrike-io/hackbrowser/sync"
 import * as fresh from "./bb-sync-freshness"
 import { writeProgramDocs } from "./bb-program-docs"
+import * as err from "../../session/bb-errors"
 import { UI } from "../ui"
 import { spawn } from "node:child_process"
 import path from "node:path"
@@ -80,6 +81,22 @@ async function validateH1Api(
     if (retry !== 401) return { ok: true, status: retry, usedIdentifier: username }
   }
   return { ok: false, status, usedIdentifier: identifier }
+}
+
+/**
+ * I programmi che l'utente ha gia' in locale, per l'errore "programma
+ * inesistente". Un refuso e' molto piu' probabile di un programma cancellato,
+ * quindi mostrare gli handle validi e' la cosa che fa risolvere il problema
+ * senza dover chiedere. `listPrograms()` esclude gia' i nomi riservati.
+ */
+function elencoLocale(): string {
+  try {
+    return getBugBountyManager().listPrograms().join(", ")
+  } catch {
+    // Se la lista non e' leggibile l'errore va comunque detto: il refuso
+    // resta visibile nella riga principale.
+    return ""
+  }
 }
 
 /** Mask a secret for display: first 7 chars + ellipsis + last 3. */
@@ -702,7 +719,17 @@ export const BBCommand = cmd({
           if (fresh.needsSync(etaPrima, fresh.DEFAULT_MAX_AGE_HOURS, args.force === true)) {
             if (args.dryRun) {
               console.log(
-                `(--dry-run: sincronizzerei ${program} — dati di ${etaPrima === null ? "?" : Math.floor(etaPrima / 24) + " giorni"} fa)`,
+                `(--dry-run: sincronizzerei ${program} — dati di ${etaPrima === null ? "?" : Math.floor(etaPrima / 24) + " giorni" } fa)`,
+              )
+              // Non si puo' sapere qui se il programma esiste: `--dry-run` non
+              // sincronizza, quindi nessuna richiesta parte e nessun errore
+              // arriva. Dichiararlo e' l'unica cosa onesta — il comando serve
+              // proprio a ispezionare, e "sincronizzerei ghost" senza
+              // avvertire sarebbe l'informazione sbagliata proprio nel comando
+              // da cui l'utente si aspetta di capire.
+              console.log(
+                `(--dry-run: il programma su HackerOne NON e' stato verificato. ` +
+                  `Senza questo controllo un refuso passerebbe. Senza --dry-run si ferma.)`,
               )
             } else {
               console.log(`🔄 Aggiorno i dati di ${program}…`)
@@ -712,6 +739,28 @@ export const BBCommand = cmd({
                 unsynced = false
                 console.log(`✅ ${program} aggiornato`)
               } catch (e) {
+                // Un programma inesistente NON e' il fallback della Fase 2.
+                // "Rete assente" e "questo programma non esiste" sono due fatti
+                // diversi: il primo si risolve riprovando piu' tardi, il secondo
+                // non si risolve affatto. Partire con uno scope fantasma fa
+                // produrre finding su target che non esistono, e l'utente lo
+                // scopre solo quando il report viene respinto.
+                //
+                // Nota: si ferma anche se il programma ERA in locale. Avevo
+                // un tempo la condizione `&& unsynced`, per non fermarmi se il
+                // file c'era gia'. Era una tolleranza che non serve a niente:
+                // se HackerOne non lo conferma piu', l'agente lavorerebbe su
+                // uno scope morto. Misurato: con quella condizione il TUI partiva
+                // lo stesso, con l'avviso di fallback — cioe' esattamente il
+                // difetto che si voleva eliminare.
+                if (err.isProgramMissing(e)) {
+                  console.error(
+                    `\n✗ il programma "${program}" non esiste su HackerOne.\n` +
+                      `  Niente e' stato scritto. Controlla il nome e riprova.\n` +
+                      `  Programmi in locale: ${elencoLocale() || "nessuno"}\n`,
+                  )
+                  process.exit(1)
+                }
                 stale = fresh.staleNotice(program, fresh.ageHours(config?.lastUpdated), e)
                 console.log(stale)
               }

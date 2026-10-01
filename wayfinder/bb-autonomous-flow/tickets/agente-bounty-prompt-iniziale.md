@@ -19,6 +19,111 @@ il messaggio iniziale e l'`AGENTS.md` dicono all'agente che il testo
 integrale della policy è quel file, invece dei 500 caratteri troncati. Il
 lavoro reale della fase 3 è `scope.md` + payout per-asset + il collegamento.
 
+## Difetto: `bb hunt` su programma inesistente lanciava il TUI (2026-10-01)
+
+Segnalato dall'utente. Prima lanciava l'interfaccia da ~800 MB su uno scope
+fantasma e restava appeso; in una riga di terminale il comando usciva dopo
+200+ secondi con un processo vivo.
+
+### Rete assente e programma inesistente non sono la stessa cosa
+
+La Fase 2 aveva deciso che un sync fallito non blocca l'avvio. Bene, ma quel
+comportamento nascondeva un caso diverso:
+
+- **rete assente** — si risolve riprovando piu' tardi, e l'utente ha gia' i
+  dati buoni: si parte e si dichiara;
+- **programma inesistente** — non si risolve affatto. Se il nome e' sbagliato
+  o il programma e' stato chiuso, l'agente produce finding su target che non
+  esistono e l'utente lo scopre quando il report viene respinto.
+
+Il secondo e' un errore di input, non un fallback.
+
+### Perche' l'errore e' tipizzato e non cercato nel testo
+
+Lo stesso fatto arriva da due punti con due testi diversi:
+
+- `sync.ts:103`, quando `team` e' null -> `Program 'x' not found on HackerOne`
+- GraphQL, quando il team non c'e' -> `Team does not exist`
+
+Grappolarsi sul testo significa che un refactor del messaggio upstream
+rimette in gioco il TUI su un programma inesistente. La decisione si prende in
+`sync.ts`, dove si sa che il team e' assente, e viaggia come
+`ProgramNotFoundError`.
+
+Il default di `isProgramMissing` e' **falso**: scambiando un errore di rete
+per "inesistente" si fa fallire un avvio che poteva partire, e quello e' un
+danno minore che far partire un agente su scope fantasma.
+
+### Il mio primo fix NON funzionava, e il difetto non era dove credevo
+
+Avevo scritto `isProgramMissing(e) && unsynced`, per non fermarmi se il file
+del programma esisteva gia' in locale. Ho misurato che il TUI partiva
+ugualmente: esattamente il difetto segnalato. La tolleranza non serviva a
+niente — se HackerOne non conferma piu' il programma, l'agente lavorerebbe su
+uno scope morto. Tolta.
+
+Vale la pena registrarla perche' mostra dove NON era il difetto: la
+classificazione dell'errore era giusta al primo colpo. Il buco era la
+condizione con cui veniva usata, e quel buco non si vede nei test sulle
+funzioni pure.
+
+### Misurato
+
+```
+prima:   200+ s, TUI lanciato, ~800 MB, processo appeso
+dopo:    4 s, exit 1, nessun TUI
+```
+
+```
+✗ il programma "nonesiste" non esiste su HackerOne.
+  Niente e' stato scritto. Controlla il nome e riprova.
+  Programmi in locale: nonesiste
+```
+
+L'elenco dei programmi in locale c'e' perche' un refuso e' molto piu'
+probabile di un programma cancellato, e mostrarre gli handle validi risolve il
+problema senza dover chiedere.
+
+### Il caso opposto verificato davvero, non ragionato
+
+Bloccando la rete con un proxy verso una porta chiusa:
+
+```
+🔄 Aggiorno i dati di bcny…
+> ⚠ non ho potuto aggiornare i dati di bcny: Unable to connect. Is the computer able to access the url?
+> uso quelli dell'ultimo salvataggio — 30 giorni fa.
+```
+
+exit 0: la Fase 2 continua a funzionare. Il fix non ha mangiato il fallback.
+
+### Test: 3 end-to-end + 4 sulle funzioni
+
+`test/cli/bb-hunt-missing-program.test.ts` misura uscita e **tempo**, non
+una stringa interna. Un test sulle funzioni pure sarebbe restato verde per
+tutta la fase mentre il difetto vero era vivo.
+
+```
+col fix:                     3 pass, 0 fail
+condizione && unsynced:     2 pass, 1 fail
+typecheck:                   11/11
+```
+
+Dichiarati **non-regressione**: "la rete assente continua a partire col
+fallback" e i 4 test di `bb-errors.test.ts` sulle funzioni di pure
+classificazione.
+
+**Limite dichiarato**: il test sul tempo ("non ci mette minuti") resta verde
+anche con la condizione sbagliata, perche' misura la durata e non l'esito —
+il TUI lanciato risponde in qualche secondo. Misura il pegno, non il difetto:
+e' il test sull'esito che tiene.
+
+### Pulizia
+
+Tre prove manuali hanno lasciato un TUI appeso e tre directory in /tmp, perche'
+il fix non funzionava. Chiusi a mano: 0 processi, 0 tmp, 0 container.
+Verificato anche che i dati reali (`bcny`, 6 giorni, 13 target) fossero
+intatti: le prove usavano `CYBERSTRIKE_HOME` temporaneo.
+
 ## Fase 3 — fatta e controprovata (2026-09-30)
 
 Nella directory di ogni programma ora ci sono `AGENTS.md` (l'indice, 750 byte)
