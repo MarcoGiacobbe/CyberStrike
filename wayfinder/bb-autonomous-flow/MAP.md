@@ -13,6 +13,17 @@ Tracker: local markdown (fallback per skill wayfinder — coerente col vincolo
 > 4. **Nessun test che non misura niente**: controllo positivo, `rc` usato,
 >    marker rimossi, controprova a `HEAD`.
 
+## Allineamento 2026-10-01
+
+**Stato ticket: 23/32 chiusi, 9 aperti con lavoro che manca.**
+(`23/32`, non `8/9` — vedi "Indice dei ticket" in fondo perche' il conteggio
+precedente era falso: la MAP riportava lo stato del 26/09 e contraddiceva il
+codice su almeno tre voci.)
+
+Lavoro di oggi verificato: `47bda46ff` (programma inesistente si ferma),
+`62c648580` (senza dati non si parte), piu' le 4 fasi di
+`agente-bounty-prompt-iniziale`. Suite 1848 pass, typecheck 11/11.
+
 ## Destination
 
 Dentro cyberstrike, un comando esplicito — `cyberstrike bb hunt <program>`
@@ -29,37 +40,42 @@ L'ideale resta un messaggio in linguaggio naturale ("voglio huntare bcny") che
 porta allo stesso risultato (vedi [intercettazione-programma]); il comando è la
 versione deterministica e testabile dello stesso flusso.
 
-## Stato reale (misurato 2026-09-26)
+## Stato reale (RIVERIFICATO 2026-10-01)
+
+> **Le righe sotto sono state rilette contro il codice, non copiate dal 26/09.**
+> Il 2026-09-26 questa sezione diceva `bb hunt` **NON ESISTE** e "persistenza
+> ROTTA": entrambe le affermazioni erano gia' superate quel giorno stesso e
+> non erano state aggiornate. Le ho verificate una per una.
 
 | Cosa | Stato reale |
 |---|---|
-| `cyberstrike bb hunt` | **NON ESISTE** — `grep` su `packages/cyberstrike/src/cli/cmd/bb*` non trova il sottocomando. La Destination sopra è l'obiettivo, non la realtà |
-| Perimetro in produzione | **SUPERATO (2026-09-26)**: la riga sotto diceva che `buildProjectRuleset` non ha caller di produzione — vero fino a ieri, falso oggi. `bb hunt` ora chiama `ProjectPerimeter.buildProjectRuleset` in `cli/cmd/bb.ts`, e i 9 vincoli sul DB di `bcny` vengono da lì (verificato). Il perimetro è cablato in produzione sulla via `bb hunt`. La prova che dentro il container il path fuori non sia raggiungibile **e' stata fatta il 2026-09-27** (`verify-v14-lateral.sh`): la fuga laterale fra programmi e' chiusa dai mount stretti. Resta pero' V11 parziale: la home del container e' ancora scrivibile, ed e' un ticket separato da `/app` read-only. |
-| TUI dentro il container | **Si apre e disegna** — PTY 140×40: 192 colori di sfondo, 159 di testo, 11049 byte |
-| Schermo vuoto | **Dopo l'invio del messaggio**, non all'avvio. Difetto a valle, non ancora misurato |
-| Persistenza dati | **ROTTA** — 4 difetti, vedi sotto |
-| Confine kernel | **Regge** — `escape-test.sh` 6/6 negati, `CapEff=0` |
-| Chromium nel container | Presente `154.0.8037.57`, headless, renderizza DOM. Usa `--no-sandbox` **solo al suo interno** (i user namespace sono bloccati: `unshare` → `Operation not permitted`) |
+| `cyberstrike bb hunt` | **ESISTE e verificato** (dal 2026-09-26, `hunt-comando-entry-point.md`). Il comando e' nel namespace `bb`, non un wrapper |
+| Programma inesistente | **SI FERMA** (2026-10-01, `47bda46ff`): exit 1 in 4s, nessun TUI. Prima: 200+s e ~800 MB appesi |
+| Programma mai sincronizzato + rete assente | **SI FERMA** (2026-10-01, `62c648580`): il fallback sarebbe vuoto, quindi non si parte. Prima: partiva con zero target |
+| Rete assente con dati in locale | **PARTE** col fallback dichiarato — comportamento approvato, verificato di nuovo il 2026-10-01 |
+| Sync automatico | **FATTO** (2026-10-01, `be4f5b074`): scatta sopra le 24h, `--force` lo forza, l'eta' dei dati finisce nel prompt dell'agente prima dello scope |
+| Cartella del programma | **E' il progetto** (2026-10-01, `801d7d906`): passata al TUI con `--project`, non piu' il cwd |
+| Istruzioni nella cartella | **FATTE** (2026-10-01, `60ca9a302`): `AGENTS.md` + `scope.md`, che separano i siti web dai prodotti desktop — per `bcny` 5 URL e 8 prodotti, uno dei quali da $20.000 |
+| Perimetro in produzione | **CABLATO** sulla via `bb hunt` (`buildProjectRuleset` in `cli/cmd/bb.ts`) |
+| Fuga laterale fra programmi | **CHIUSA** — verificata nel codice il 2026-10-01: `run-sandbox.sh:224-227` monta solo `programs/<programma>` rw, i config `:ro`, `credentials.json` non e' montato. `/app:ro` |
+| Persistenza dati | **RISOLTA** (`difetto-persistenza-stato.md`, 4/4): volumi nominati |
+| Confine kernel | **REGGE** — `escape-test.sh` 6/6 negati, `CapEff=0` |
+| `bb --help` | **NON tace piu'** in locale italiano (`4a43b0231`): mancava `.locale("en")` |
+| TUI dentro il container | Si apre e disegna — PTY 140x40 |
+| Schermo vuoto | **Difetto diverso**: non e' il TUI vuoto all'avvio (ritirato, era falso) ma quello **dopo l'invio del messaggio`. SOSPESO per decisione dell'utente |
 
-### Difetti aperti nel container (misurati 2026-09-26)
+### Difetti del container (lista del 26/09 — SUPERATA)
 
-1. **Stato perso a ogni avvio** — il comando manuale non monta volumi.
-   Prova: avvio 1 scrive `~/.local/share/cyberstrike/MARKER.txt` → OK; avvio 2 →
-   `No such file or directory`. Issue **#15**.
-2. **Programmi invisibili al codice** — `bounty-state.ts:110-114` calcola
-   `<root>/bugbounty/programs/`; con `CYBERSTRIKE_HOME=/work` cerca
-   `/work/bugbounty/programs`, ma il mount è su `/work/programmi`. `bcny`,
-   `bbtest`, `smoketest`, `security`, `bookingcom` **non esistono per il
-   codice**. Gate e perimetro risultano **spenti in silenzio**. Issue **#15**.
-3. **`/work` non scrivibile né persistente** — root-owned nel layer:
-   `touch /work/MARKER` → `Permission denied`; e `--rm` lo cancella.
-4. **`run-sandbox.sh` non accetta comandi** — ogni argomento finisce in un
-   comando CyberStrike, mai in bash (`Run 'docker run --help'`). Issue **#15**.
-5. **`node_modules` dell'host montati** (5.4 GB): dipendenze native compilate
-   sull'host; serve un volume con `bun install` fatto dentro.
-6. **`/app` montato `rw`**: l'agente può scrivere in tutto il repository host.
-7. **`/work/sorgenti` non è un confine reale** — è la stessa directory di
-   `/work/programmi` montata anche `rw` sotto un altro nome.
+I sette difetti qui elencati erano misurati il 2026-09-26. **Cinque sono
+chiusi**: il `node_modules` dell'host (ora un volume con `bun install` dentro),
+`/app` in `rw` (ora `:ro`), `/work` non scrivibile (volumi nominati), `run-sandbox.sh`
+che non accettava comandi, `/work/sorgenti` come alias della stessa directory.
+**La lista e' stata lasciata com'era e va letta come storico, non come stato
+corrente** — le verifiche del 2026-10-01 sono nella tabella sopra.
+
+Restano aperti, ma su ticket separati e non su questo elenco: contenimento
+kernel completo (`sandbox-docker-contenitore.md`) e il difetto di schermo
+vuoto post-invio (`tui-schermo-vuoto-post-invio.md`, sospeso).
 
 ## Notes
 
@@ -88,10 +104,10 @@ versione deterministica e testabile dello stesso flusso.
 - [Credenziali H1 sync](tickets/credenziali-h1-sync.md): RISOLTO (2026-09-24) — l'identifier dell'API è lo username H1, non il valore del token (`markjacob9:<token>` → HTTP 200). `bb connect` ridotto a 2 passi, auto-retry con username, token mascherato in `whoami`. Commit `7fa7f8fee`
 - [Identity da policy](tickets/identity-da-policy.md): APERTO (2026-09-24) — `resolveIdentity()` pronta e verificata ma `cfg.identity` non viene mai popolato: `bb sync` lo conserva soltanto. Serve derivare header/UA dalle direttive del programma. Caso di test utile: programma HackerOne `security` (chiede header custom), NON bcny (non lo chiede)
 - [Help comandi bb](tickets/help-comandi-bb.md): **CHIUSO (2026-09-28)** — il difetto descritto qui era STALE: `bb --help` elencava gia' tutte e 12 le azioni. Il difetto **vero**, misurato col CLI reale: `cyberstrike bb` da solo usciva con **rc=1 e ZERO byte** (e cosi `mcp`, e tutti i 12 gruppi con `demandCommand()`), perche' con `LANG=it_IT` yargs carica `locales/it.json` che **non contiene** "Not enough non-option arguments" e la chiave assente produce `undefined` invece di un fallback. Con `LANG=C` gli stessi comandi stampano l'help (1965 byte): il difetto colpiva proprio l'utente italiano. Fix: `.locale("en")` in `src/index.ts` (punto unico, risolve tutti i gruppi) + `.demandCommand(1)` e handler esplicito in `bb.ts`. Controprova a HEAD: 0 byte / 1 pass 2 fail; col fix 3 pass 0 fail. Difetti adiacenti ANCORA APERTI e non coperti da questo ticket: paginazione assente (limite 100 scope), wildcard non convertiti in pattern, policy troncata a 500 char nel JSON
-- [Fuga laterale fra programmi](tickets/fuga-laterale-fra-programmi.md): **RISOLTO (2026-09-27)** — il launcher accetta `--program <nome>` e monta SOLO `programs/<nome>` (rw) + `<nome>.json` / `.accounts.json` / `.policy.md` (ro). **La root `bugbounty/` non e' piu' montata**: `credentials.json` e i config degli altri programmi non esistono dentro il container — non negati, assenti, quindi nemmeno leggibili. Il nome e' validato con `[!a-z0-9_-]*` **prima** di costruire path e prima di toccare docker: senza, `--program ../../etc` avrebbe trasformato il mount stretto in un mount della root (misurato: i 3 tentativi escono con exit 2). **Test** `verify-v14-lateral.sh` PASS con controprova pulita: riportando il mount a largo il test va rosso e **la fuga arriva davvero sull'host**, controllo positivo verde in entrambi i casi. `verify-v15-bb-hunt.sh` PASS (non regressione di `bb hunt`, rosso senza il ramo `bb`). **Difetto mio trovato in verifica:** il launcher non aveva un ramo `bb`, quindi `run "bb hunt ..."` finiva in `... src/index.ts run "$CS_CMD"` = una sessione LLM che leggeva il sorgente invece di eseguire il comando; `--dry-run` non stampava mai `=== MESSAGGIO INIZIALE ===` e sembrava un fallimento del perimetro. **Resta aperto:** `bb list` mostra solo il montato (dato non disponibile nel confine, non un bug); `/app` resta `rw` (preesistente).
-- [Symlink non canonicalizzato](tickets/symlink-perimetro-non-canonicalizzato.md): **RISOLTO al 3o giro** (`deleg_0605e823`, poi `deleg_f9dda4ce`, 2026-09-27) — **tre difetti reali trovati da subagent avversariali, non ipotizzati**; i primi due fix erano incompleti. Difetto di fondo: `write`/`edit`/`apply_patch` scrivevano in `programs/bcny-test` passando da un symlink dentro `bcny`, perche' i controlli confrontavano il path *lessicale*. Erano **due porte indipendenti** (`external_directory` e la regola `allow("edit", "<programma>/*")` che concede il perimetro) piu' il TOCTOU fra controllo e scrittura. **1o buco**: si risolveva solo `dirname`; con un componente intermedio symlink e directory finale inesistente, `realpath` falliva e il fallback presupponeva che `mkdir -p` creasse directory reali — presupposizione **falsa** (`mkdir -p` segue il symlink); canary in `bcny-test/newdir/rubato.txt`. **2o buco**: il **symlink danneggiato** (punta a un file esterno inesistente) — `realpath` fallisce identico sia su un componente inesistente sia su un link danneggiato, ma solo il secondo verra' seguito da `Bun.write`; canary in `other/created.txt` con contenuto `ESCAPED`, e `external_directory` non scattava affatto. Correzione: `resolveDeepest` sale fino alla prima directory esistente, la risolve col `realpath`, riappone i tratti mancanti e sui symlink usa `lstat`+`readlink` per seguire la destinazione. `assertExternalDirectory` confronta `containsPath(canonical)` e **restituisce** `canonical`: i tre tool controllano e scrivono sullo stesso path, quindi la finestra TOCTOU non contiene piu' nulla di decidibile. Test `symlink-perimeter-escape.test.ts` **8/8**, controprova a HEAD **6 falliti** su 8, controllo positivo verde. **Difetti segnalati e NON riprodotti** (etichettati `REGRESSIONE`, non venduti come fix): symlink sul file stesso; `apply_patch` move. **Lacune dichiarate**: la **porta 2 non e' dimostrata sufficiente da sola** (bypassando solo `external_directory` i tre attacchi passano); `apply_patch movePath` resta lessicale (latente, non sfruttato). **La fuga laterale ora e' chiusa** dai mount stretti (vedi ticket dedicato): il perimetro software e' la difesa in profondita, non l'unica.
-- [Path dinamici e ask vs deny](tickets/path-dinamici-bask-chiedono-conferma.md): **chiuso come NON fuga, aperto come ostacolo (2026-09-27)**. `ask` non e' una falla: `PermissionNext.ask` (`permission/next.ts:305-320`) restituisce una Promise che si risolve solo con risposta umana, e `bb hunt` non ha auto-approve. **V13 pero' ha scoperto altro:** in modalita' `run` `run.ts:536-549` fa **auto-reject di ogni permesso**, e `ProjectPerimeter` mette `bash` e `bash_unresolved` a `ask` (`permission/project.ts:489,492`) — quindi l'agente **non puo' usare bash in nessun caso**, nemmeno dentro il perimetro. Fail-closed corretto, ma il flusso autonomo non funziona in `run`. In TUI l'`ask` appare all'utente e resta pendente: il flusso e' **semipresidiato**, non autonomo. **Da decidere:** allow esplicito per bash dentro il perimetro, auto-approve limitato, o semipresidiato.
-- [Sandbox](tickets/sandbox-scritture-perimetro.md): FASE 1 FATTA (2026-09-25, commit `84d3d4a34`) — gate implementato, 5 buchi chiusi dopo verifica avversariale indipendente. **V8 aggiunse che `buildProjectRuleset`/`diagnose` non avevano caller di produzione: SUPERATO il 2026-09-26, `bb hunt` li chiama e i 9 vincoli sono sul DB. **V11 aggiornato 2026-09-27: la fuga laterale fra programmi e' chiusa e verificata** (`verify-v14-lateral.sh`, controprova pulita). Resta V11 **parziale**: `/home/hunter` e' ancora scrivibile nel container, e `/app` e' montato `rw`. Sono due ticket separati.
+- [Fuga laterale fra programmi](tickets/fuga-laterale-fra-programmi.md): **RISOLTO — riconfermato sul codice 2026-10-01** — il launcher accetta `--program <nome>` e monta SOLO `programs/<nome>` (rw) + `<nome>.json` / `.accounts.json` / `.policy.md` (ro). **La root `bugbounty/` non e' piu' montata**: `credentials.json` e i config degli altri programmi non esistono dentro il container — non negati, assenti, quindi nemmeno leggibili. Il nome e' validato con `[!a-z0-9_-]*` **prima** di costruire path e prima di toccare docker: senza, `--program ../../etc` avrebbe trasformato il mount stretto in un mount della root (misurato: i 3 tentativi escono con exit 2). **Test** `verify-v14-lateral.sh` PASS con controprova pulita: riportando il mount a largo il test va rosso e **la fuga arriva davvero sull'host**, controllo positivo verde in entrambi i casi. `verify-v15-bb-hunt.sh` PASS (non regressione di `bb hunt`, rosso senza il ramo `bb`). **Difetto mio trovato in verifica:** il launcher non aveva un ramo `bb`, quindi `run "bb hunt ..."` finiva in `... src/index.ts run "$CS_CMD"` = una sessione LLM che leggeva il sorgente invece di eseguire il comando; `--dry-run` non stampava mai `=== MESSAGGIO INIZIALE ===` e sembrava un fallimento del perimetro. **Resta aperto:** `bb list` mostra solo il montato (dato non disponibile nel confine, non un bug); `/app` resta `rw` (preesistente).
+- [Symlink non canonicalizzato](tickets/symlink-perimetro-non-canonicalizzato.md): **RISOLTO al 3o giro** — la sezione in fondo cita ancora «V11 resta NON PASSA»: e' stale, la fuga laterale e' chiusa (`run-sandbox.sh:224`) (`deleg_0605e823`, poi `deleg_f9dda4ce`, 2026-09-27) — **tre difetti reali trovati da subagent avversariali, non ipotizzati**; i primi due fix erano incompleti. Difetto di fondo: `write`/`edit`/`apply_patch` scrivevano in `programs/bcny-test` passando da un symlink dentro `bcny`, perche' i controlli confrontavano il path *lessicale*. Erano **due porte indipendenti** (`external_directory` e la regola `allow("edit", "<programma>/*")` che concede il perimetro) piu' il TOCTOU fra controllo e scrittura. **1o buco**: si risolveva solo `dirname`; con un componente intermedio symlink e directory finale inesistente, `realpath` falliva e il fallback presupponeva che `mkdir -p` creasse directory reali — presupposizione **falsa** (`mkdir -p` segue il symlink); canary in `bcny-test/newdir/rubato.txt`. **2o buco**: il **symlink danneggiato** (punta a un file esterno inesistente) — `realpath` fallisce identico sia su un componente inesistente sia su un link danneggiato, ma solo il secondo verra' seguito da `Bun.write`; canary in `other/created.txt` con contenuto `ESCAPED`, e `external_directory` non scattava affatto. Correzione: `resolveDeepest` sale fino alla prima directory esistente, la risolve col `realpath`, riappone i tratti mancanti e sui symlink usa `lstat`+`readlink` per seguire la destinazione. `assertExternalDirectory` confronta `containsPath(canonical)` e **restituisce** `canonical`: i tre tool controllano e scrivono sullo stesso path, quindi la finestra TOCTOU non contiene piu' nulla di decidibile. Test `symlink-perimeter-escape.test.ts` **8/8**, controprova a HEAD **6 falliti** su 8, controllo positivo verde. **Difetti segnalati e NON riprodotti** (etichettati `REGRESSIONE`, non venduti come fix): symlink sul file stesso; `apply_patch` move. **Lacune dichiarate**: la **porta 2 non e' dimostrata sufficiente da sola** (bypassando solo `external_directory` i tre attacchi passano); `apply_patch movePath` resta lessicale (latente, non sfruttato). **La fuga laterale ora e' chiusa** dai mount stretti (vedi ticket dedicato): il perimetro software e' la difesa in profondita, non l'unica.
+- [Path dinamici e ask vs deny](tickets/path-dinamici-bask-chiedono-conferma.md): **chiuso come NON fuga, APERTO come ostacolo (2026-09-27)** — resta nell'elenco degli aperti. `ask` non e' una falla: `PermissionNext.ask` (`permission/next.ts:305-320`) restituisce una Promise che si risolve solo con risposta umana, e `bb hunt` non ha auto-approve. **V13 pero' ha scoperto altro:** in modalita' `run` `run.ts:536-549` fa **auto-reject di ogni permesso**, e `ProjectPerimeter` mette `bash` e `bash_unresolved` a `ask` (`permission/project.ts:489,492`) — quindi l'agente **non puo' usare bash in nessun caso**, nemmeno dentro il perimetro. Fail-closed corretto, ma il flusso autonomo non funziona in `run`. In TUI l'`ask` appare all'utente e resta pendente: il flusso e' **semipresidiato**, non autonomo. **Da decidere:** allow esplicito per bash dentro il perimetro, auto-approve limitato, o semipresidiato.
+- [Sandbox](tickets/sandbox-scritture-perimetro.md): FASE 1 FATTA, **con una parte ancora aperta** (bash in-process non confinato: vedi indice) (2026-09-25, commit `84d3d4a34`) — gate implementato, 5 buchi chiusi dopo verifica avversariale indipendente. **V8 aggiunse che `buildProjectRuleset`/`diagnose` non avevano caller di produzione: SUPERATO il 2026-09-26, `bb hunt` li chiama e i 9 vincoli sono sul DB. **V11 aggiornato 2026-09-27: la fuga laterale fra programmi e' chiusa e verificata** (`verify-v14-lateral.sh`, controprova pulita). Resta V11 **parziale**: `/home/hunter` e' ancora scrivibile nel container, e `/app` e' montato `rw`. Sono due ticket separati.
 - [Contenimento a livello kernel](tickets/sandbox-docker-contenitore.md): **APERTO (2026-09-26) — V6 PARZIALE, non risolto**. Il *confine* e' davvero nel kernel (escape-test 6/6 negati, CapEff=0) e il TUI ci gira dentro, ma **non e' dimostrato che il flusso bug bounty funzioni end-to-end**: manca una sessione reale con risposta resa + tool eseguito (vedi [defetto-tui-messaggio-vuoto](tickets/defetto-tui-messaggio-vuoto.md) e V12). Dichiararlo 'risolto per impianto' era una conclusione anticipata. Decisione utente: *tutto* l'agente dentro il container, non solo `bb hunt`. V6 era dichiarato "limite per scelta di design" perché il perimetro è un gate applicativo in JS — un gate che sta dove sta l'avversario non è un confine. Il container sposta il confine nel kernel (namespace + mount RO) e **rende G4 privo di soggetto**: dentro il container `/etc` è un file vuoto e `/home/marco` non è montato, quindi "scrivere fuori dal progetto" non è una regola da rispettare ma una posizione in cui non esiste. Punto d'innesto: `packages/cyberstrike/src/tool/bash.ts:312` — **una sola riga**, l'unico `spawn` da cui esce tutto. Docker 29.1.3 presente; 25G liberi su `/var/lib/docker`; budget per container, **misurato su quello che l'utente avvia davvero**: `--memory=3g --pids-limit=1024` (la MAP dichiarava 2g/256: disallineamento corretto qui; la decisione sull'allineamento fra budget dichiarato e budget usato resta all'utente). Struttura `/work/programmi/<p>` (rw) + `/work/sorgenti/` (ro). **Perché "tutto l'agente" e non solo `bb hunt`**: il TUI è già un processo separato, quindi se il TUI gira nel container il confine vale per TUTTI gli agenti. Da decidere: se `docker` resta in `WRITE_COMMANDS`, l'agente non può lanciarlo da solo senza chiederti. **FASE 1 misurata** (`d9c445950`): immagine costruita, `escape-test.sh` eseguito davvero → 6 tentativi di fuga, **0 riusciti**, `CapEff=0`. **FASE 2 in corso** — e la scoperta che la rende diversa da una normale "avvia il TUI": il bounty agent **è un agente browser** (`hackbrowser/src/agent.ts:1` importa playwright, `api.ts:151` fa preflight su `chromium.executablePath()`): senza Chromium nel container l'agente è **muto**, e fallisce con un preflight, non con un errore di permessi. **PRIORITÀ UTENTE (2026-09-26): il rafforzamento del confine è NON PRIORITARIO** — l'agente non nasce con l'intenzione di scappare, il confine serve a fermare un **errore**. Prioritario è far funzionare il docker (Fase 2→3). Misurato: `nmap -sS` richiede **root + NET_RAW insieme** (`--cap-add` da solo non basta, `CapEff` resta 0); `nmap -sT` ok senza privilegi. | sandbox-scritture-perimetro, hunt-comando-entry-point | — |
 - [Difetto: il container perde i dati a ogni avvio](tickets/difetto-persistenza-stato.md): **RISOLTO (2026-09-26) — correzione minima, 4/4**. Prima avevo rifatto l'ambiente del container; l'utente ha corretto: *"Solo cyberstrike è dentro docker. Tutto il resto uguale a prima!"*. Ripristinata la versione di prima e corretti i difetti uno alla volta, volumi e `CYBERSTRIKE_HOME` invariati. Il fix che chiude il difetto 2 e' **un path**: `bounty-state.root()` cerca `<root>/bugbounty/programs/` (`bounty-state.ts:110-114`) e il mount era su `/work/programmi` — programmi invisibili e, perche' gate e perimetro si ancorano alla stessa base, **perimetro spento in silenzio**, senza errore. Ora il mount e' su `/work/bugbounty/programs`. Misurato: `root()=/work`, `programsDir=/work/bugbounty/programs`, perimetro genera 9 regole con `deny external_directory`, `run "rispondi esattamente: MINIMO OK"` → `MINIMO OK`, e i file in `/home/hunter` e nel mount sopravvivono al riavvio (il terzo marker, in `/work` stesso, e' `Permission denied`: `/work` e' root-owned nel layer e l'unica dir scrivibile e' il mount, dove il codice scrive). Verifica indipendente su questa versione: in corso (il primo giro aveva verificato la versione superata, i suoi 4 difetti extra sono stati riprovati uno per uno — 2 falsi, `shell -c` rotto **corretto**). **Secondo giro, sul launcher giusto: 7/7 criteri passati** (percorsi, 5 modi d'invocazione, persistenza, provider, area pulita). L'unico difetto segnalato — `run-sandbox.sh echociao` risponde l'LLM invece di eseguire — non e' un bug ma il comportamento voluto (argomento non riconosciuto = messaggio all'agente), ora dichiarato in testata. Issue **#15**.
 - [Difetto: schermo vuoto DOPO l'invio del messaggio](tickets/defetto-tui-messaggio-vuoto.md): **SOSPESO (2026-09-28) per decisione utente** — *"non mi usciva piu stamattina, da ignorare"*. Era dichiarato BLOCCANTE il 26/09, ma non e' il blocco attivo. Il passaggio non misurato (invio -> sessione -> risposta -> render) resta l'unica cosa da guardare se ricompare, e per misurarlo il browser nel container era gia' pronto: crash chiuso in `597d46431`
@@ -232,3 +248,59 @@ verdi. `browser-crash-dentro-sandbox.md`
 Vedi `REGOLE-FONDAMENTALI.md`, in cima a questo file. Non negoziabili: mai
 container su container, stop esplicito alla fine di ogni test, massimo 1-2
 sessioni, controllo memoria prima di partire.
+
+## Indice dei ticket — verificato 2026-10-01 (32 ticket)
+
+Il numero **non e' "8/9"**: nella cartella ci sono 32 ticket e 14 non hanno
+uno stato unico. Quello che segue e' l'esito di aver letto ciascun file fino
+in fondo, non l'etichetta in cima.
+
+**Chiusi — 16.** Lavoro finito e verificato: `app-readonly`,
+`apply-patch-move`, `browser-crash-dentro-sandbox`, `toctou-gate-scrittura`,
+`falsi-verdi-nei-test-sandbox`, `difetto-persistenza-stato`, `riuso-container-test`,
+`help-comandi-bb`, `hunt-comando-entry-point`, `agente-bounty-prompt-iniziale`,
+`verifica-fix-v8`, `defetto-tui-messaggio-vuoto` (sospeso dall'utente, non
+risolto), e i tre ticket di piano/superati (`plano-directory-programmi`,
+`struttura-directory-progetto`, `intercettazione-programma`).
+
+**Aperti con lavoro che manca — 9.** `sandbox-docker-contenitore` (V12 non
+passa: il flusso end-to-end dentro il container non e' verificato),
+`sandbox-scritture-perimetro` (la parte bash in-process: il perimetro blocca
+in container, non in un agente che gira sulla host), `tui-schermo-vuoto-post-invio`
+(sospeso), `stato-progetto` (residua il "target toccato" fuori dal crawler),
+`identity-da-policy` (`cfg.identity` non popolato in produzione),
+`credenziali-h1-sync` (`bb connect` salva il token ma `bb sync` non lo usa),
+`bb-sync-fetch-hackerone` (solo GraphQL pubblico, niente fallback autenticato),
+`orchestrator-flusso` (i passi 2-4 non esistono: c'e' il comando, non
+l'orchestratore), `sqlite-misuse-all-avvio-tui` (carta ancora aperta, ma non
+riprodotto in 17 run).
+
+**Raccolte di verifica — 3.** `verifica-v9`, `verifica-stato-gate-always`:
+non sono difetti aperti, sono elenchi di cio' che i fix coprono e di cio' che
+no. V9 chiude con la nota che il perimetro e' difesa di libreria senza
+caller di produzione — superata il 26/09, quel richiamo dentro il file e' stale.
+
+**Ricerche / decisioni senza implementazione — 4.** `sandbox-scritture`,
+`research-scopes-senza-auth`, `intercettazione-programma`,
+`struttura-directory-progetto`: hanno `- [ ]` ancora spuntati e nessun codice.
+
+### Perche' la MAP era disallineata, e cosa l'ha causato
+
+Tre cause diverse, e solo la terza e' un errore mio:
+
+1. **Ticket con stato solo nel titolo.** Cinque ticket scrivono
+   `CHIUSO 2026-09-28` nell'`#` e poi, 200 righe sotto, conservano la sezione
+   "ancora aperto" di quando erano aperti. L'euristica li legge come aperti.
+   Il fix esiste, ma il file non è stato riordinato.
+2. **Sezioni di chiusura con titoli che sembrano verdetti.** `## Criterio di
+   chiusura` è un *titolo*, non un verdetto: leggendolo come chiuso si
+   sbaglia. Così ho sbagliato io al primo tentativo, e ho buttato via una
+   classificazione automatica che contava 6 chiusi e 12 aperti — numeri senza
+   senso, frutto di quella lettura.
+3. **Righe del 26/09 mai aggiornate.** La tabella "Stato reale" diceva
+   `bb hunt NON ESISTE` e "persistenza ROTTA" quando entrambe erano gia'
+   superate. Riletta e riscritta oggi contro il codice.
+
+**Regola per l'avanti:** l'etichetta in cima a un ticket non vale nulla. Il
+verdetto e' l'ultima sezione scritta, e va letto sul codice quando tocca il
+comportamento — non copiato nella MAP.
