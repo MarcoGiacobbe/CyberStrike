@@ -11,13 +11,14 @@
 // All writes go through saveProgram() (bugbounty manager) — the same file
 // the crawler reads, so a synced program is immediately crawlable.
 
-import { getBugBountyManager } from "./bugbounty.ts"
+import { getBugBountyManager, loadHunterCredentials } from "./bugbounty.ts"
 
 const GRAPHQL_URL = "https://hackerone.com/graphql"
+const API_BASE = "https://api.hackerone.com/v1/hackers"
 const UA = "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0"
 
-async function gql<T = any>(query: string, variables?: Record<string, unknown>): Promise<T> {
-  const res = await fetch(GRAPHQL_URL, {
+async function gql<T = any>(query: string, variables?: Record<string, unknown>, url = GRAPHQL_URL): Promise<T> {
+  const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", "user-agent": UA, accept: "application/json" },
     body: JSON.stringify({ query, variables }),
@@ -87,18 +88,97 @@ interface TeamData {
 const fmt = (n: number | null | undefined) => (n == null ? null : `$${n.toLocaleString("en-US")}`)
 
 /**
+ * Seconda fonte, complementare a GraphQL: quando `bb connect` ha salvato un
+ * token API, questo apre api.hackerone.com/v1/hackers/*, che il GraphQL del
+ * sito IGNORA (misurato 2026-10-01: `401 Invalid authentication token` — i
+ * due endpoint non si parlano).
+ *
+ * Cosa dà il token e cosa NO, misurato:
+ * - DÀ  la policy INTEGRALE (l'anonimo ne tronca 500 caratteri) e l'elenco dei
+ *   programmi che l'utente può vedere.
+ * - NON dà lo scope strutturato (`/programs/<id>/structured_scopes` → 404
+ *   "Team does not exist"), e su un campione di 25 programmi nessuno era
+ *   privato: per un cacciatore il privato NON è un dato leggibile. Quindi lo
+ *   scope resta anonimo, e non è una scelta ma un limite dell'API.
+ *
+ * Ogni errore qui è NON FATALE per scelta: un token scaduto non deve far
+ * perdere la sincronizzazione che l'anonimo sa fare da solo.
+ */
+async function withToken(
+  handle: string,
+  apiBase = API_BASE,
+): Promise<{ policy?: string; visiblePrograms?: string[]; tokenRejected?: boolean }> {
+  const creds = loadHunterCredentials()
+  if (!creds?.api_token || !creds?.api_identifier) return {}
+  const auth = `Basic ${Buffer.from(`${creds.api_identifier}:${creds.api_token}`).toString("base64")}`
+  try {
+    // NB: la lista e' PAGINATA e il programma puo' non stare in pagina 1 —
+    // misurato su bcny: non e' nei primi 100 handle della pagina 1, quindi
+    // con una sola richiesta la policy intera non arrivava MAI. Si scorre
+    // fino a trovare il programma, con un tetto di pagine.
+    let programs: string[] = []
+    let policy: string | undefined
+    let rejected = false
+    // NB: NON fermarsi quando si trova il programma. La lista e' quella che
+    // viene mostrata all'utente ("cosa posso cacciare"): fermarsi alla pagina
+    // che contiene il programma la lascerebbe TRONCATA senza dirlo (misurato
+    // da un verificatore indipendente: 2 handle su 3, e sul reale 100 su 595).
+    for (let page = 1; page <= 10; page++) {
+      const res = await fetch(`${apiBase}/programs?page%5Bsize%5D=100&page%5Bnumber%5D=${page}`, {
+        headers: { accept: "application/json", "user-agent": UA, authorization: auth }
+      })
+      if (!res.ok) {
+        // 401/403 = il token non e' buono. Non e' la stessa cosa di "l'utente
+        // non vede programmi": restituire [] farebbe leggere a chi chiama un
+        // elenco VUOTO come se fosse la risposta reale.
+        rejected = res.status === 401 || res.status === 403
+        break
+      }
+      const json = (await res.json()) as {
+        data?: { attributes?: { handle?: string; policy?: string } }[]
+        links?: { next?: string | null }
+      }
+      const rows = json.data ?? []
+      if (!rows.length) break
+      programs.push(...rows.map((r) => r.attributes?.handle).filter((h): h is string => !!h))
+      // non sovrascrivere: le altre pagine hanno policy "" e azzererebbero
+      // quella appena trovata
+      policy ??= rows.find((r) => r.attributes?.handle === handle)?.attributes?.policy
+      if (!json.links?.next) break
+    }
+    return { policy, visiblePrograms: rejected ? undefined : programs, tokenRejected: rejected }
+  } catch {
+    return {}
+  }
+}
+
+export interface SyncEndpoints {
+  /** Endpoint GraphQL del sito (anonimo): unica fonte per lo scope. */
+  graphqlURL?: string
+  /** Base REST autenticata: serve solo per policy intera + elenco programmi. */
+  apiBase?: string
+}
+
+/**
  * Sync a public HackerOne program: fetch live data via anonymous GraphQL and
  * write the program JSON through the BugBountyManager. Returns a summary.
  * Throws on unknown handle / non-public program.
  */
-export async function syncProgram(handle: string): Promise<{
+export async function syncProgram(
+  handle: string,
+  endpoints: SyncEndpoints = {},
+): Promise<{
   name: string
   inScope: string[]
   outScope: string[]
   bountyAssets: number
   rulesChars: number
+  /** Presente solo se c'era un token valido: cosa può vedere questo utente. */
+  visiblePrograms?: string[]
+  /** true se la policy è arrivata intera dalla REST invece dei 500 caratteri. */
+  fullPolicy?: boolean
 }> {
-  const data = await gql<TeamData>(TEAM_QUERY, { handle })
+  const data = await gql<TeamData>(TEAM_QUERY, { handle }, endpoints.graphqlURL)
   const team = data.team
   if (!team?.id) throw new Error(`Program '${handle}' not found on HackerOne`)
 
@@ -165,9 +245,14 @@ export async function syncProgram(handle: string): Promise<{
     lastUpdated: new Date().toISOString(),
   }
 
-  // Policy text (program rules) — truncated to keep the JSON/prompt sane;
-  // full policy cached alongside for reference.
-  const policy = team.policy_setting?.policy ?? ""
+  // Policy text (program rules). Anonymous GraphQL returns it; with a token the
+  // REST copy is the FULL text (the excerpt below is the anonymous one, so
+  // prefer the token's when it exists and is longer). The full text is cached
+  // alongside for reference; only a 500-char excerpt goes into the JSON, to
+  // keep the prompt sane.
+  const anon = team.policy_setting?.policy ?? ""
+  const tok = await withToken(handle, endpoints.apiBase)
+  const policy = tok.policy && tok.policy.length > anon.length ? tok.policy : anon
   if (policy) cfg.rules!.custom!.push(`policy_excerpt: ${policy.slice(0, 500).replaceAll(/\s+/g, " ")}…`)
   manager.addProgram(handle, cfg as never)
   if (policy) {
@@ -176,5 +261,13 @@ export async function syncProgram(handle: string): Promise<{
     writeFileSync(`${dir}/${handle}.policy.md`, policy)
   }
 
-  return { name: team.name, inScope, outScope, bountyAssets: byAsset.size, rulesChars: policy.length }
+  return {
+    name: team.name,
+    inScope,
+    outScope,
+    bountyAssets: byAsset.size,
+    rulesChars: policy.length,
+    visiblePrograms: tok.visiblePrograms,
+    fullPolicy: !!tok.policy && tok.policy.length > anon.length,
+  }
 }

@@ -287,13 +287,23 @@ ostacolo*: la causa era il flag del provider, non il container),
 non solo sul ticket), `stato-progetto` (chiuso con lavoro futuro: la coverage
 note resta fuori priorita' **per decisione dell'utente**).
 
-**Aperti con lavoro verificabilmente mancante — 6.**
+**Aperti con lavoro verificabilmente mancante — 4** (erano 6: il
+2026-10-01 ne chiude 2, `credenziali-h1-sync` e `bb-sync-fetch-hackerone`).
 `sandbox-scritture-perimetro` (**stato al 2026-10-01**: il perimetro **E' cablato** in produzione — `bb.ts:885` passa 9 regole, `deny("external_directory")` nega i path esterni espliciti senza conferma; resta aperto **per decisione esplicita dell'utente** il fallback dei comandi con destinatario opaco, che passano da `ctx.ask`), `identity-da-policy` (`cfg.identity` non popolato in produzione),
-`credenziali-h1-sync` (`bb connect` salva il token, `bb sync` non lo usa),
-`bb-sync-fetch-hackerone` (solo GraphQL anonimo, niente fallback autenticato),
 `orchestrator-flusso` (i passi 2-4 non esistono: c'e' il comando, non
 l'orchestratore), `tui-schermo-vuoto-post-invio` (**sospeso per decisione
 dell'utente**: bloccato a valle della discovery dei tool endpoint).
+
+**Chiusi il 2026-10-01 — 2.** `credenziali-h1-sync` e
+`bb-sync-fetch-hackerone`: `bb sync` ora usa due fonti complementari — scope
+anonimo invariato byte per byte, e **solo se c'e' un token** la policy via
+REST (che non tronca) piu' l'elenco dei 595 programmi visibili. Tre fatti
+misurati che cambiano il presupposto del ticket: il token **non puo'**
+sostituire l'anonimo (`hackerone.com/graphql` risponde `401` al token API),
+lo **scope privato non esiste per un cacciatore** (`/structured_scopes` → `404
+"Team does not exist"`, 0 privati su 25 campionati), e la REST e' **paginata
+e non ordinata** (`bcny` e' in pagina 6 su 6: senza paginazione la policy
+arrivava solo per i programmi in pagina 1).
 
 **Chiusi ma NON risolti — 3.** Stati reali, che non vanno mescolati con
 "chiusi" perche' un riaprire costerebbe piu' di un aperto:

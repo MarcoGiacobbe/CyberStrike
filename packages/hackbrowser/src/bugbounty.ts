@@ -213,10 +213,16 @@ export class BugBountyManager {
 
 // Singleton instance
 let bbManager: BugBountyManager | null = null;
+let bbManagerHome: string | null = null;
 
 export function getBugBountyManager(): BugBountyManager {
-  if (!bbManager) {
+  // La directory programmi dipende da CYBERSTRIKE_HOME: se la home cambia a
+  // runtime (test isolati, sessioni con --project) riusare il manager creato
+  // altrove scriverebbe nella directory SBAGLIATA, in silenzio.
+  const home = process.env.CYBERSTRIKE_HOME || path.join(os.homedir(), ".cyberstrike");
+  if (!bbManager || bbManagerHome !== home) {
     bbManager = new BugBountyManager();
+    bbManagerHome = home;
   }
   return bbManager;
 }
