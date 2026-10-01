@@ -117,6 +117,67 @@ anche con la condizione sbagliata, perche' misura la durata e non l'esito —
 il TUI lanciato risponde in qualche secondo. Misura il pegno, non il difetto:
 e' il test sull'esito che tiene.
 
+### Secondo buco: programma MAI sincronizzato + rete assente (verifica indipendente)
+
+Trovato dalla verifica avversariale del 2026-10-01, non da me. Con un
+programma che non e' mai stato sincronizzato e la rete assente, `bb hunt`
+partiva **con scope completamente vuoto**: zero target, zero regole, 800 MB
+di processo per non guardare nulla. `rc: 0`.
+
+Non e' il caso "programma inesistente" — la causa e' diversa (qui il
+programma potrebbe esistere, e' solo la rete che manca) e l'errore mostrato
+e' diverso. Ma la conclusione coincide, e segue dallo stesso principio che
+regge la Fase 2: **il fallback serve a non buttare via i dati buoni di
+ieri. Se i dati non ci sono mai stati, il fallback e' vuoto.**
+
+Corretto con un secondo `process.exit(1)`, dopo quello del programma
+inesistente e con un messaggio distinto.
+
+```
+✗ non ho i dati di "X" e non sono riuscito a scaricarli.
+  La rete non ha risposto, quindi non posso dire se il programma esiste
+  ne' quali target sono in scope. Partire qui significherebbe
+  un agente con zero target da guardare.
+  Riprova quando hai rete, oppure:
+      bb sync X
+```
+
+Nota: qui `config === undefined` da solo non basta come condizione, perche'
+un file presente ma senza `lastUpdated` non e' "mai sincronizzato" — e' un
+programma in locale con dati mai aggiornati, che il fallback deve poter
+usare. Per questo la condizione e' `unsynced && config === undefined`.
+
+Controprova: 4 pass, 1 fail (`Expected 1, Received 0`) prima del fix.
+
+### I due test che NON misurano il difetto, dichiarati
+
+Nella verifica indipendente i test di controprova hanno dato **2 rossi su
+5**: quelli che misurano davvero l'esito. Quelli che misurano il **tempo**
+e il **dry-run** restano verdi anche col fix rimosso, perche' con la
+condizione sbagliata il TUI parte ma risponde in pochi secondi, e il
+dry-run per costruzione non arriva al ramo dell'errore.
+
+Non li ho toccati perche' coprono comunque regressioni reali (un TUI che
+non parte piu' in 30s e' un altro difetto), ma **non sono la prova del
+fix**. La prova e' il test sull'esito.
+
+### Verifica indipendente del 2026-10-01
+
+Subagent con mandato avversariale su `47bda46ff`. Cosa ha dato:
+
+- controprova riportando `bb.ts` al commit precedente: **2 test rossi**,
+  quindi i test non sono roiti;
+- ha lasciato **7 directory in /tmp** nonostante il cleanup esplicito
+  richiesto, e un TUI vivo che ha poi chiuso. Puliti a mano: 0 processi,
+  0 tmp, 0 container, working tree pulito, i 9 programmi reali intatti;
+- l'`output_schema` che gli avevo passato gli ha fatto restituire solo un
+  numero invece del ragionamento. Errore mio: non avrei dovuto passare uno
+  schema che contiene solo un campo numerico se volevo il verdetto. Il
+  numero era giusto, il resto del ragionamento l'ho rifatto io.
+
+Cosa NON ha potuto controllare, e quindi resta aperto: i percorsi `--continue`
+e gli altri comandi `bb` oltre a `hunt`.
+
 ### Pulizia
 
 Tre prove manuali hanno lasciato un TUI appeso e tre directory in /tmp, perche'

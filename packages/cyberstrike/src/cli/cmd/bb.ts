@@ -761,6 +761,28 @@ export const BBCommand = cmd({
                   )
                   process.exit(1)
                 }
+                // Secondo caso, trovato dalla verifica indipendente del
+                // 2026-10-01: il fallback serve a non buttare via i dati buoni
+                // di ieri. Se i dati non ci sono MAI stati il fallback e'
+                // vuoto — l'agente parte con zero target e zero regole, cioe'
+                // 800 MB di processo per non guardare nulla.
+                //
+                // Non e' la stessa cosa di "programma inesistente" (le cause
+                // sono diverse e l'errore mostrato e' diverso), ma la
+                // conclusione coincide: non si parte senza niente da guardare.
+                // Nota che qui `config` puo' esistere senza `lastUpdated`: e'
+                // un file non mai sincronizzato, non un programma in locale.
+                if (unsynced && config === undefined) {
+                  console.error(
+                    `\n✗ non ho i dati di "${program}" e non sono riuscito a scaricarli.\n` +
+                      `  La rete non ha risposto, quindi non posso dire se il programma esiste\n` +
+                      `  ne' quali target sono in scope. Partire qui significherebbe\n` +
+                      `  un agente con zero target da guardare.\n` +
+                      `  Riprova quando hai rete, oppure:\n` +
+                      `      bb sync ${program}\n`,
+                  )
+                  process.exit(1)
+                }
                 stale = fresh.staleNotice(program, fresh.ageHours(config?.lastUpdated), e)
                 console.log(stale)
               }

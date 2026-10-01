@@ -116,4 +116,27 @@ describe("bb hunt: programma inesistente si ferma, non arriva al TUI", () => {
     // e resta coerente con l'avvio reale, che invece si ferma
     expect(r.out).toContain("Senza --dry-run si ferma")
   }, 120_000)
+
+  test("programma MAI sincronizzato + rete assente: si ferma, non parte vuoto", () => {
+    // Buco trovato dalla verifica indipendente del 2026-10-01.
+    //
+    // Il fallback della Fase 2 esiste per non buttare via i dati buoni di
+    // ieri. Se i dati non ci sono MAI stati, il fallback e' vuoto: l'agente
+    // si avvia con zero target e zero regole, cioe' 800 MB di processo per
+    // non guardare nulla. Non e' il caso "programma inesistente" (li ho tenuti
+    // distinti perche' le cause sono diverse), ma la conclusione e' la stessa:
+    // non si parte senza niente da guardare.
+    const home = mkdtempSync(path.join(tmpdir(), "bbvuoto-"))
+    homes.push(home)
+    mkdirSync(path.join(home, "bugbounty"), { recursive: true })
+    const r = runBb(home, ["mai_sincronizzato"], {
+      HTTPS_PROXY: "http://127.0.0.1:9",
+      HTTP_PROXY: "http://127.0.0.1:9",
+      ALL_PROXY: "http://127.0.0.1:9",
+    })
+    expect(r.code).toBe(1)
+    expect(r.out).toContain("bb sync mai_sincronizzato")
+    // niente TUI, niente sessione
+    expect(r.out).not.toContain("--session")
+  }, 120_000)
 })
