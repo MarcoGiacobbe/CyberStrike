@@ -1,6 +1,20 @@
 # Ticket: perimetro di scrittura confinato al progetto (sandbox)
 
-## Stato: FASE 1 IMPLEMENTATA E VERIFICATA (2026-09-24)
+## Stato: PARZIALMENTE CHIUSO — 2026-10-01, dopo sette giri di verifica avversariale
+
+**Chiuso e verificato:** i path esterni *espliciti* sono negati senza conferma
+(`deny("external_directory")`, cablato in produzione da `bb.ts:885`); la `tmp/`
+del programma esiste ed e' l'unica zona scrivibile dichiarata; la config del
+container e' in sola lettura; scritture via symlink/hard link, TOCTOU,
+programma fratello e catena di cammino sono chiuse (vedi i giri in fondo).
+
+**Aperto per decisione ESPLICITA dell'utente (2026-10-01), non per
+dimenticanza:** i comandi con destinatario opaco (`python3 -c`, `touch $(...)`,
+script) passano da `ctx.ask` — «per ora lasciamo così e accetto il rischio».
+
+Il testo sotto descrive la FASE 1 del 2026-09-24 e non riflette lo stato
+odierno: i suoi "71 test verdi" sono oggi 25 test mirati + suite, e i vincoli
+sono cablati in produzione (non piu' una difesa di libreria).
 
 Modulo `packages/cyberstrike/src/permission/project.ts` + classi A/B/C in
 `bash.ts`. 71 test verdi (unit + E2E con Instance reale), typecheck 11/11.
