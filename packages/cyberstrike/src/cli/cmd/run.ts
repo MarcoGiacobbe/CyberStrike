@@ -442,6 +442,25 @@ export const RunCommand = cmd({
       const events = await sdk.event.subscribe()
       let error: string | undefined
 
+      /**
+       * Permessi richiesti e NON concessi, con il motivo per cui non sono
+       * stati concessi. In non-interattivo nessuno risponde, quindi ogni
+       * richiesta che arriva qui finisce con `reject` (`run.ts`, sotto).
+       *
+       * Prima non veniva contato e `run` usciva 0: l'agente si arrende in
+       * silenzio e il chiamante legge un successo. Misurato il 2026-10-01
+       * simulando `bb hunt bcny` nel container — sessione partita, zero
+       * output, exit 0.
+       *
+       * Nota sul confine: `permission.asked` viene pubblicato SOLO quando
+       * la regola dice `ask`. Un `deny` lancia `DeniedError` in
+       * `PermissionNext.ask` e non arriva MAI qui (`permission/next.ts`),
+       * quindi qui non c'e' bisogno — e non si deve — distinguere i due casi:
+       * ogni evento che arriva e' per definizione "serve un umano che qui
+       * non c'e'". Il confine resta silenzioso e legittimo.
+       */
+      const deniedByAsking: Array<{ permission: string; patterns: string[] }> = []
+
       async function loop() {
         const toggles = new Map<string, boolean>()
 
@@ -537,6 +556,10 @@ export const RunCommand = cmd({
           if (event.type === "permission.asked") {
             const permission = event.properties
             if (permission.sessionID !== sessionID) continue
+            deniedByAsking.push({
+              permission: permission.permission,
+              patterns: permission.patterns,
+            })
             UI.println(
               UI.Style.TEXT_WARNING_BOLD + "!",
               UI.Style.TEXT_NORMAL +
@@ -603,6 +626,52 @@ export const RunCommand = cmd({
           variant: args.variant,
           parts: [...files, { type: "text", text: message }],
         })
+      }
+
+      // La sessione e' finita: adesso si puo' dire com'e' andata.
+      //
+      // `error` raccoglie gli eventi `session.error` fin dall'inizio ma
+      // fino al 2026-10-01 non era MAI letto: una sessione fallita usciva
+      // 0 esattamente come una riuscita.
+      //
+      // Nota: `run` non ha un timeout proprio — un timeout e' un
+      // `session.error` emesso dal provider. Quindi qui resta un timeout,
+      // col messaggio del provider, e NON viene mischiato con "permesso
+      // manca": i due rami sotto sono distinti e il primo esce subito. Non
+      // sostituire questo `if` con una lista unica di "errori": un
+      // timeout deve restare un timeout.
+      if (error) {
+        UI.error(error)
+        process.exit(1)
+      }
+
+      // Richieste di permesso scartate perche' nessuno poteva approvarle.
+      // Non e' un errore dell'agente e non e' una violazione del perimetro:
+      // e' `run` usato in un modo per cui non puo' funzionare (non
+      // interattivo, con regole che chiedono approvazione umana). Si
+      // dichiara e si esce non zero, altrimenti un `bb hunt` in container
+      // che non produce nulla si presenta come riuscito — misurato: exit 0,
+      // nessuno state.json, nessun report.
+      if (deniedByAsking.length > 0) {
+        const righe = deniedByAsking
+          .map((d) => `  ${d.permission} (${d.patterns.join(", ")})`)
+          .join(EOL)
+        UI.println(
+          UI.Style.TEXT_DANGER_BOLD + "!  " + "Permessi richiesti e non concessi.",
+          UI.Style.TEXT_NORMAL,
+          EOL + righe,
+          EOL + EOL +
+            "In modalita' non interattiva nessuno puo' approvarli, quindi la " +
+            "sessione non puo' continuare.",
+          EOL +
+            "Usa `bb hunt` / `run` in un terminale interattivo per decidere.",
+          EOL +
+            "Non e' una soluzione dichiarare `permission` in config: `run` " +
+            "costruisce le regole da se' e passa solo `question: deny` a " +
+            "session.create (misurato: la config non viene letta). Le regole " +
+            "del perimetro entrano da `bb hunt`.",
+        )
+        process.exit(1)
       }
     }
 

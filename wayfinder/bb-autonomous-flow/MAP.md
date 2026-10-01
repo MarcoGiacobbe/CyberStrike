@@ -33,6 +33,15 @@ Lavoro di oggi verificato: `47bda46ff` (programma inesistente si ferma),
 `62c648580` (senza dati non si parte), piu' le 4 fasi di
 `agente-bounty-prompt-iniziale`. Suite 1848 pass, typecheck 11/11.
 
+**2026-10-01, simulazione `bcny`:** il perimetro regge (dry-run: 13 asset, `edit`/
+`bash` confinati, config read-only), ma il primo run reale e' uscito **0 senza aver
+fatto nulla** — [`falso-successo-permesso-non-concesso`](tickets/falso-successo-permesso-non-concesso.md).
+Corretto: un `ask` senza operatore ora esce 1 e nomina il permesso. Nello stesso
+punto misurato che `run` **ignora** la chiave `permission` della config (costruisce
+`rules` con un solo `question: deny`): le regole del perimetro entrano solo da
+`bb hunt`. Rimane aperto: il run cercava `/app/packages/cyberstrike/` invece di
+`/work/bugbounty/programs/bcny` (fix A della working directory, non ancora fatto).
+
 ## Destination
 
 Dentro cyberstrike, un comando esplicito — `cyberstrike bb hunt <program>`
