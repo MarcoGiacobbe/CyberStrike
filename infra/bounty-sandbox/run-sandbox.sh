@@ -227,6 +227,13 @@ if [ -n "$PROGRAM" ]; then
     fi
   done
   add_bb_mount "$BB_DIR"       "/work/bugbounty/programs/$PROGRAM" rw
+  # Il path del programma VISTO DALL AGENTE dentro il container. Va passato
+  # come env, non interpolato nella stringa interna (stessa ragione di
+  # CS_CMD): qui $PROGRAM e gia valorizzato, e dichiararlo piu in alto
+  # produceva silenziosamente il path senza handle (misurato: /work/
+  # bugbounty/programs/ invece di .../bcny, e il perimetro avrebbe incluso
+  # TUTTI i programmi invece del solo bcny).
+  CS_PROGRAM_DIR="/work/bugbounty/programs/$PROGRAM"
   add_bb_mount "$BB_ROOT/$PROGRAM.json"        "/work/bugbounty/$PROGRAM.json"        ro
   add_bb_mount "$BB_ROOT/$PROGRAM.accounts.json" "/work/bugbounty/$PROGRAM.accounts.json" ro
   add_bb_mount "$BB_ROOT/$PROGRAM.policy.md"    "/work/bugbounty/$PROGRAM.policy.md"    ro
@@ -327,7 +334,32 @@ INNER_SCRIPT='cd /app
     case "@@MODE@@" in
       test)        exec /bin/bash -c "$CS_CMD" ;;
       shell)       exec /bin/bash ;;
-      cyberstrike) exec bun run --cwd packages/cyberstrike src/index.ts run "$CS_CMD" ;;
+      # Il flag perimeter non e cosmetico. Senza il confine applicativo
+      # `run` ha solo question: deny: il perimetro vive nei MOUNT del
+      # container, quindi l-agente aveva un disco confinato ma nessuna
+      # regola nei tool. Il disco limita i file, non le azioni.
+      #
+      # NON aggiungere il flag dir: spostare la cwd sul mount del programma
+      # fa crashare il provider (misurato: "no providers found" in
+      # defaultModel, exit 0, in 7 secondi). Il percorso esiste ed e
+      # scrivibile, quindi NON e un problema di mount: `run --dir` fa solo
+      # process.chdir e poi bootstrap(process.cwd()) (run.ts:326 e 720), e la
+      # Instance risultante non ha piu provider. La CAUSA esatta non e stata
+      # isolata: la spiegazione che avevo scritto prima (la config non viene
+      # piu trovata) e FALSA, la config e in /home/hunter/csconfig e ci
+      # arriva regolarmente. Non dichiarare la causa finche non e misurata.
+      #
+      # Difetto noto e NON risolto: l-agente parte da /app e legge i sorgenti
+      # di CyberStrike invece dei dati di caccia (misurato 2026-10-01: Read
+      # /app/packages/cyberstrike, 37 voci di sorgente, zero asset del
+      # programma). Finche cwd e provider non sono risolti insieme, il prompt
+      # deve dare il path assoluto /work/bugbounty/programs/<handle>.
+      #
+      # NOTA: niente apostrofi in questi commenti. INNER_SCRIPT e una
+      # stringa single-quoted: un apostrofo la chiude e lo script si rompe
+      # con errore di sintassi (misurato tre volte).
+      cyberstrike) exec bun run --cwd packages/cyberstrike src/index.ts run "$CS_CMD" \
+                          --perimeter "$CS_PROGRAM_DIR" ;;
       bb)          exec bun run --cwd packages/cyberstrike src/index.ts $CS_CMD ;;
       tui)         exec bun run dev ;;
     esac'
@@ -393,6 +425,7 @@ if [ "$KEEP" = "1" ]; then
     exec docker exec -i \
       ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
       -e CS_CMD="$CS_CMD" \
+  -e CS_PROGRAM_DIR="$CS_PROGRAM_DIR" \
       "$NAME" /bin/bash -lc "$INNER_SCRIPT"
   fi
   # Non esiste (o e' fermo): si rimuove e si avvia pulito, UNA volta sola.
@@ -469,6 +502,7 @@ fi
 docker run "${TTY_ARGS[@]}" "${RUN_FLAGS[@]}" --name "$NAME" \
   "${PASS_ENV[@]}" \
   -e CS_CMD="$CS_CMD" \
+  -e CS_PROGRAM_DIR="$CS_PROGRAM_DIR" \
   --cap-drop=ALL \
   --security-opt=no-new-privileges \
   --pids-limit=1024 \
@@ -521,4 +555,5 @@ rc_run=$?
 # chiama qui sotto riceverebbe un successo fasullo. Misurato il 2026-09-28.
 exec docker exec -i \
   -e CS_CMD="$CS_CMD" \
+  -e CS_PROGRAM_DIR="$CS_PROGRAM_DIR" \
   "$NAME" /bin/bash -lc "$INNER_SCRIPT"

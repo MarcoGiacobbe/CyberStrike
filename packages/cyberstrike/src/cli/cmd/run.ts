@@ -11,6 +11,7 @@ import { Server } from "../../server/server"
 import { Provider } from "../../provider/provider"
 import { Agent } from "../../agent/agent"
 import { PermissionNext } from "../../permission/next"
+import { ProjectPerimeter } from "../../permission/project"
 import { Tool } from "../../tool/tool"
 import { GlobTool } from "../../tool/glob"
 import { GrepTool } from "../../tool/grep"
@@ -292,6 +293,13 @@ export const RunCommand = cmd({
         type: "string",
         describe: "directory to run in, path on remote server if attaching",
       })
+      .option("perimeter", {
+        type: "string",
+        describe:
+          "confine il progetto a questa directory: le regole perimetrali " +
+          "entrano nel ruleset della sessione. Senza questo flag `run` non ha " +
+          "nessun confine applicativo (solo i mount del filesystem)",
+      })
       .option("port", {
         type: "number",
         describe: "port for the local server (defaults to random port if no value provided)",
@@ -364,6 +372,18 @@ export const RunCommand = cmd({
       process.exit(1)
     }
 
+    // L'ordine del perimetro e' innocuo in entrambe le direzioni, e va detto
+    // perche' la mia prima giustificazione era SBAGLIATA. Avevo scritto che
+    // `question: deny` doveva stare prima perche' `evaluate` usa `findLast`.
+    // Non e' vero: `buildProjectRuleset()` non emette nessuna regola per
+    // `question`, quindi le due non si incontrano mai (misurato: le regole
+    // sono per `edit`, `external_directory`, `bash`, `bash_unresolved` e
+    // `read`). L'append in coda e' comunque la forma giusta perche' e' la
+    // stessa di `bb hunt` e non richiede di ricordare il punto dell'append.
+    //
+    // Senza `--perimeter` resta solo `question: deny`, cioe' com'e' oggi: il
+    // flag e' esplicito per non cambiare il comportamento di chi non l'ha mai
+    // passato.
     const rules: PermissionNext.Ruleset = [
       {
         permission: "question",
@@ -371,6 +391,23 @@ export const RunCommand = cmd({
         pattern: "*",
       },
     ]
+
+    if (args.perimeter) {
+      // Le stesse TRE chiamate di `bb hunt` (bb.ts:871-885), nessuna logica
+      // nuova: `diagnose()` perche' da sola `buildProjectRuleset` non basta
+      // (misurato nel repo: senza `diagnose` un path traversal costruiva 9
+      // regole su /tmp), `isSafe()` perche' e' una lista POSITIVA — un rischio
+      // non previsto e' rifiutato invece di passare in silenzio.
+      const diagnosis = await ProjectPerimeter.diagnose(args.perimeter)
+      if (!ProjectPerimeter.isSafe(diagnosis)) {
+        UI.error(
+          `Non posso costruire un perimetro affidabile per ${args.perimeter}: ${diagnosis.risk}.`,
+        )
+        if (diagnosis.warning) UI.error(diagnosis.warning)
+        process.exit(1)
+      }
+      rules.push(...ProjectPerimeter.buildProjectRuleset(args.perimeter, diagnosis.worktree))
+    }
 
     function title() {
       if (args.title === undefined) return

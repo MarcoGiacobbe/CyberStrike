@@ -72,6 +72,54 @@ Dettagli del fake, perche' servono e non sono ovvi:
 - Il messaggio di errore **non** suggerisce piu' di dichiarare `permission` in
   config: prima lo faceva, ed e' un suggerimento falso per quanto misurato sopra.
 
+## Difetto residuo: la cwd del sandbox resta /app
+
+Il perimetro applicativo ora e applicato, MA il sandbox continua a far
+partire `run` da `/app`, che e la copia READ-ONLY del codice di CyberStrike.
+L-agente quindi cerca i dati del programma nel posto sbagliato.
+
+Misurato (2026-10-02, run reale in sandbox):
+- col perimetro: `bash (ls -la /app/packages/cyberstrike/scope.md ...)` negato
+  alla riga 8 del log, prima che il perimetro perda efficacia;
+- a HEAD: `external_directory (/dev/*)` richiesto alla riga 86.
+
+Il perimetro e dunque reale e precoce. Ma blocca invece di guidare: il
+l-agente non trova i file e prova a cercarli altrove.
+
+`--dir` NON e la risposta: misurato che spostare la cwd sul mount del programma
+fa crashare il provider (`no providers found` in `defaultModel`, exit 0, 7
+secondi). Il percorso esiste ed e scrivibile, quindi NON e un problema di mount.
+
+**Correzione di una mia spiegazione falsa.** Avevo scritto che `--dir`
+rompesse il provider "perche la config smette di essere trovata nel percorso
+atteso". E' falso: dentro il container la config e in `/home/hunter/csconfig`,
+ci arriva regolarmente, ed `xdgConfig` dipende da `XDG_CONFIG_HOME`/`HOME`, non
+dalla cwd. La CAUSA esatta non e stata isolata. Cosa e misurato: `run --dir`
+fa solo `process.chdir` (`run.ts:326`) e poi `bootstrap(process.cwd())`
+(`run.ts:720`); la `Instance` risultante non ha piu provider. Non dichiarare la
+causa finche non e misurata.
+
+Finche non e risolto, il prompt deve dire esplicitamente il path assoluto dei
+dati (`/work/bugbounty/programs/<handle>`).
+
+## Correzione: l'ordine delle regole non e cio` che pensavo
+
+Il primo commento nel codice diceva che il perimetro va DOPO `question: deny`
+perche `PermissionNext.evaluate` usa `findLast`. **La giustificazione era falsa**:
+`buildProjectRuleset()` non emette nessuna regola per `question` (le regole sono
+per `edit`, `external_directory`, `bash`, `bash_unresolved`, `read`), quindi le
+due non si incontrano mai. Verificato evaluando entrambi gli ordini:
+identico risultato. L'append in coda resta la forma giusta perche' e la stessa
+di `bb hunt`, non perche `findLast` lo richieda.
+
+## Altro misurato: `read` su path esterno e`ask`, non concessa
+
+Non esiste un'azione di lettura che il default dell-agente conceda per un
+path fuori dal progetto: anche `read` chiede `external_directory` e viene
+negata in non-interattivo. Quindi un test che confronta "leggo fuori" con e
+senza perimetro NON distingue: entrambi negano. L'unico test che dimostra
+che il perimetro aggiunge un confine e` scrivere DENTRO, che a HEAD fallisce.
+
 ## Stato
 
 `test/cli` 100/100, `bun turbo typecheck --force` 11/11. Verifica indipendente

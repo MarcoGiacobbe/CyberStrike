@@ -39,8 +39,32 @@ fatto nulla** — [`falso-successo-permesso-non-concesso`](tickets/falso-success
 Corretto: un `ask` senza operatore ora esce 1 e nomina il permesso. Nello stesso
 punto misurato che `run` **ignora** la chiave `permission` della config (costruisce
 `rules` con un solo `question: deny`): le regole del perimetro entrano solo da
-`bb hunt`. Rimane aperto: il run cercava `/app/packages/cyberstrike/` invece di
-`/work/bugbounty/programs/bcny` (fix A della working directory, non ancora fatto).
+`bb hunt`.
+
+**2026-10-02, A2 (perimetro anche in `run`):** `run` ha ora il flag `--perimeter
+<dir>`, che riusa le stesse tre API di `bb hunt` (`diagnose`, `isSafe`,
+`buildProjectRuleset`) e appende le regole **dopo** `question: deny`. La ragione
+e solo che e la stessa forma di `bb hunt`: la mia prima giustificazione
+(`findLast` lo richiederebbe) era FALSA, `buildProjectRuleset` non emette regole
+per `question` e i due ordini danno lo stesso risultato (verificato dalla
+verifica avversariale). Opt-in:
+senza flag il default e' invariato. `run-sandbox.sh` lo passa. Misurato in
+sandbox sul programma reale `bcny`: il perimetro e reale e precoce — a HEAD il
+run chiedeva `external_directory (/dev/*)` alla riga 86 del log, col perimetro il
+rifiuto arriva alla riga 8 e su un path fuori perimetro. Test
+`run-perimeter.test.ts` 4/4, controprova a HEAD con il test che distingue rosso,
+suite CLI 104/104, typecheck 11/11.
+
+**Resta aperto:** la **cwd del sandbox e ancora `/app`**, quindi l-agente cerca i
+dati del programma nel posto sbagliato e il perimetro lo blocca invece di
+guidarlo. `--dir` da solo NON basta: misurato che spostare la cwd sul mount del
+programma fa crashare il provider (`no providers found`, exit 0, 7 s) pur
+essendo il path esistente e scrivibile. **Causa NON isolata**: la mia spiegazione
+iniziale (la config non viene piu trovata) e falsa, la config e in
+`/home/hunter/csconfig` e ci arriva regolarmente. Finche non e risolto il prompt
+deve dare il path assoluto `/work/bugbounty/programs/<handle>`. Nota anche: `read` su path esterno e in
+`ask`, quindi non esiste un'azione di lettura che il default conceda all'esterno —
+un test che confronta "leggio fuori" con e senza perimetro non distingue.
 
 ## Destination
 
