@@ -61,8 +61,14 @@ describe("fase 3: i file del programma", () => {
     writeFileSync(policy, "# policy integrale del programma\ntesto lungo.\n")
     try {
       const md = renderAgentsDoc(base, dir)
-      expect(md).toContain(policy)
       expect(md).toContain("policy integrale")
+      // Il rimando e' il NOME del file, non il path assoluto: `AGENTS.md` e'
+      // generato sull'host ma letto nel container, dove la directory del
+      // programma ha una radice diversa. Un path assoluto sarebbe un rimando
+      // rotto in sandbox (misurato il 2026-10-02: l'agente si fermava perche'
+      // non trovava `bcny.policy.md` al path dichiarato).
+      expect(md).toContain("`esempio.policy.md`")
+      expect(md).not.toContain(dir)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -75,6 +81,28 @@ describe("fase 3: i file del programma", () => {
       expect(md).toContain("bb sync esempio")
       // non deve promettere un file che non c'e'
       expect(md).not.toContain(`${base.name}.policy.md`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("un placeholder VUOTO non e' una policy in locale", () => {
+    // Difetto misurato (deleg_647f66d0): il sandbox crea un file vuoto con
+    // `touch` per avere un mount-point su cui montare la policy vera. Il
+    // controllo era `existsSync`, che su quel file diceva vero: `AGENTS.md`
+    // annunciava «policy integrale in locale» indicando il nome di un file
+    // di ZERO byte. L'agente lo leggeva e riassumeva un contratto che non
+    // aveva mai letto — peggio del ramo «non in locale», che almeno dice
+    // di fare `bb sync`.
+    const dir = mkdtempSync(path.join(tmpdir(), "bbdocs-"))
+    try {
+      writeFileSync(path.join(dir, `${base.name}.policy.md`), "")
+      const md = renderAgentsDoc(base, dir)
+      expect(md).toContain("NON e' in locale")
+      expect(md).toContain("bb sync esempio")
+      // CONTROLLO DIRETTO sul file: nessun path assoluto e nessun nome di
+      // file annunciato come disponibile quando il contenuto e' vuoto.
+      expect(md).not.toContain(dir)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -515,19 +543,29 @@ describe("forma di CHIAMATA PRODUCTION: il terzo argomento e' la ROOT, non progr
 })
 
 describe("fase 3: REGRESSIONE del rimando alla policy", () => {
-  test("la policy sta NELLA ROOT di bugbounty, non dentro programs/", async () => {
-    // Difetto misurato: `bb.ts` passava `programsRoot` (…/bugbounty/programs)
-    // come directory della policy, quindi `AGENTS.md` scriveva "policy NON in
-    // locale" mentre il file esisteva a `…/bugbounty/<handle>.policy.md`.
-    // Un rimando rotto e' peggio di nessun rimando: l'agente va a chiedere
-    // all'utente una sync che non serve.
+  test("la policy sta dentro programs/<handle>/ e il rimando coincide col file reale", async () => {
+    // Difetto misurato (2026-10-02): `AGENTS.md` dichiarava la policy a
+    // `…/bugbounty/<handle>.policy.md`, cioe' FUORI dal perimetro del sandbox.
+    // L'agente seguiva il rimando e si fermava: `Read …/bcny.policy.md`
+    // negato dal perimetro, nessun operatore, `deniedByAsking`, exit 1.
+    //
+    // La causa era il layout: `bb sync` scriveva la policy nella root di
+    // bugbounty mentre il perimetro copre una sola directory di programma.
+    // Ora `bb sync` scrive dentro `programs/<handle>/` e `bb.ts` passa
+    // `programsRoot` a `writeProgramDocs`: rimando e file coincidono.
+    //
+    // Il test verifica il PATH ESATTO, non la presenza del nome: un
+    // `reale.policy.md` nella root e un rimando a quello passerebbero con la
+    // sola verifica del nome, che e' esattamente il difetto da cui siamo
+    // partiti.
     const home = mkdtempSync(path.join(tmpdir(), "bbreg-"))
     const prev = process.env.CYBERSTRIKE_HOME
     process.env.CYBERSTRIKE_HOME = home
     try {
-      mkdirSync(path.join(home, "bugbounty"), { recursive: true })
+      mkdirSync(path.join(home, "bugbounty", "programs", "reale"), { recursive: true })
       // la policy, nel posto in cui `bb sync` la scrive davvero
-      writeFileSync(path.join(home, "bugbounty", "reale.policy.md"), "# policy integrale\n")
+      const realePolicy = path.join(home, "bugbounty", "programs", "reale", "reale.policy.md")
+      writeFileSync(realePolicy, "# policy integrale\n")
       const d = new Date().toISOString()
       writeFileSync(
         path.join(home, "bugbounty", "reale.json"),
@@ -539,8 +577,18 @@ describe("fase 3: REGRESSIONE del rimando alla policy", () => {
       )
       expect(r.stdout.toString() + r.stderr.toString()).not.toContain("non ho potuto scrivere")
       const agents = await Bun.file(path.join(home, "bugbounty", "programs", "reale", "AGENTS.md")).text()
-      expect(agents).toContain("reale.policy.md")
+      // Il rimando e' RELATIVO. Non puo' essere assoluto: `AGENTS.md` e'
+      // generato sull'host e letto dentro il container, dove la directory
+      // del programma e' montata su un path diverso. Un path assoluto e' un
+      // rimando rotto per costruzione (misurato: l'agente si fermava perche'
+      // «non poteva verificarla»). Il nome del file basta e funziona in
+      // entrambi i posti perche' la policy sta accanto ad `AGENTS.md`.
+      expect(agents).toContain("`reale.policy.md` (in questa stessa directory)")
       expect(agents).not.toContain("NON e' in locale")
+      // CONTROLLO NEGATIVO: nessun path assoluto dell'host nella riga. Se
+      // tornasse, il test passerebbe comunque per la riga precedente ma
+      // l'agente in sandbox non potrebbe piu' leggerla.
+      expect(agents).not.toContain(path.join(home, "bugbounty"))
     } finally {
       if (prev === undefined) delete process.env.CYBERSTRIKE_HOME
       else process.env.CYBERSTRIKE_HOME = prev

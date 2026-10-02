@@ -242,7 +242,45 @@ if [ -n "$PROGRAM" ]; then
   CS_PROGRAM_DIR="/work/bugbounty/programs/$PROGRAM"
   add_bb_mount "$BB_ROOT/$PROGRAM.json"        "/work/bugbounty/$PROGRAM.json"        ro
   add_bb_mount "$BB_ROOT/$PROGRAM.accounts.json" "/work/bugbounty/$PROGRAM.accounts.json" ro
-  add_bb_mount "$BB_ROOT/$PROGRAM.policy.md"    "/work/bugbounty/$PROGRAM.policy.md"    ro
+  # La policy va montata DENTRO programs/<programma>, non alla radice di
+  # /work/bugbounty. Motivo, misurato: --perimeter e programs/<programma>,
+  # quindi una policy alla radice e' fuori dal perimetro e l'agente la
+  # legge come NEGATA. E AGENTS.md la indica per nome: se il file e' li' ma
+  # irraggiungibile, l'agente si ferma su un divieto che non ha mai letto.
+  #
+  # Montata ro, non copiata: la copia dentro programs/ la renderebbe
+  # scrivibile (directory rw) e l'agente potrebbe riscrivere il proprio
+  # contratto dopo averlo letto.
+  #
+  # Il mount-point deve gia' esistere nella directory rw. `touch`, NON
+  # `mkdir`: montare un file sopra una directory fallisce con
+  # "not a directory".
+  #
+  # La sorgente e' `programs/<programma>/<programma>.policy.md`, NON la copia
+    # nella root di bugbounty: `bb sync` scrive solo li' (sync.ts) e la copia
+    # root non e' piu' prodotta.
+    #
+    # Perche' il path legacy era un difetto — MISURATO, e non come sembrava:
+    # il launcher montava `$BB_ROOT/$PROGRAM.policy.md`, il percorso legacy,
+    # SOPRA il percorso nuovo. Ho *assunto* che significasse "l'agente legge
+    # una policy obsoleta". Ho lanciato il launcher a HEAD per controllarlo:
+    # la copia root era gia' stata rimossa, quindi `add_bb_mount` ha saltato
+    # il mount e l'agente ha letto benissimo il file annidato. Il caso legacy
+    # era quindi NON fatale da solo.
+    #
+    # Il difetto vero era un altro, e piu' subdolo: mountando la copia root,
+    # il launcher *nascondeva* il file annidato con un bind mount. Se la copia
+    # root fosse ricomparsa (ce n'e' stata una, storicamente), l'agente avrebbe
+    # letto quella, e con `bb sync` che aggiorna solo la copia annidata le due
+    # sarebbero divergute in silenzio. Sorgente unica = niente divergenza.
+    # Il caso "file assente" e' benigno perche' `add_bb_mount` salta il mount e
+    # resta il file vero della directory rw.
+    #
+    # Resta pero' vero che `touch` crea un placeholder VUOTO sull'host: per
+    # questo `bb-program-docs.ts` controlla `stat().size > 0`, non
+    # `existsSync`, altrimenti AGENTS.md annuncerebbe un file di zero byte.
+  touch "$BB_DIR/$PROGRAM.policy.md"
+  add_bb_mount "$BB_DIR/$PROGRAM.policy.md"    "/work/bugbounty/programs/$PROGRAM/$PROGRAM.policy.md" ro
   echo "  programma: $PROGRAM (mount: programs/$PROGRAM rw, config ro)"
   echo "  verificato: i path montati sono realmente dentro programs/ (nessun symlink)"
   echo "  NON montati: credentials.json, altri programmi, root BB_ROOT"
@@ -360,8 +398,20 @@ INNER_SCRIPT='cd /app
       # NOTA: niente apostrofi in questi commenti. INNER_SCRIPT e una
       # stringa single-quoted: un apostrofo la chiude e lo script si rompe
       # con errore di sintassi (misurato tre volte).
+      # CS_AUTO abilita il flag --auto di `run`: auto-approva i permessi in
+      # `ask` (simula un operatore che dice sempre si) lasciando i `deny` del
+      # perimetro intatti. Va accettato esplicitamente da chi lancia: da solo
+      # --auto significa via libera a bash, quindi e una scelta dell operatore.
+      #
+      # NOTA: niente apostrofi in questi commenti. INNER_SCRIPT e una
+      # stringa single-quoted: un apostrofo la chiude e lo script si rompe.
+      # Con un apostrofo in "e una scelta dell operatore" la stringa si
+      # chiudeva a meta e bash eseguiva `una` come comando: exit 127,
+      # "riga 366: una: comando non trovato" (misurato 2026-10-02).
+      # `bash -n` NON lo intercetta: non espande le variabili.
       cyberstrike) exec bun run --cwd packages/cyberstrike src/index.ts run "$CS_CMD" \
-                          --dir "$CS_PROGRAM_DIR" --perimeter "$CS_PROGRAM_DIR" ;;
+                          --dir "$CS_PROGRAM_DIR" --perimeter "$CS_PROGRAM_DIR" \
+                          ${CS_AUTO:+--auto} ;;
       bb)          exec bun run --cwd packages/cyberstrike src/index.ts $CS_CMD ;;
       tui)         exec bun run dev ;;
     esac'
@@ -428,6 +478,7 @@ if [ "$KEEP" = "1" ]; then
       ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
       -e CS_CMD="$CS_CMD" \
   -e CS_PROGRAM_DIR="$CS_PROGRAM_DIR" \
+  -e CS_AUTO="${CS_AUTO:-}" \
       "$NAME" /bin/bash -lc "$INNER_SCRIPT"
   fi
   # Non esiste (o e' fermo): si rimuove e si avvia pulito, UNA volta sola.
@@ -505,6 +556,7 @@ docker run "${TTY_ARGS[@]}" "${RUN_FLAGS[@]}" --name "$NAME" \
   "${PASS_ENV[@]}" \
   -e CS_CMD="$CS_CMD" \
   -e CS_PROGRAM_DIR="$CS_PROGRAM_DIR" \
+  -e CS_AUTO="${CS_AUTO:-}" \
   --cap-drop=ALL \
   --security-opt=no-new-privileges \
   --pids-limit=1024 \
@@ -558,4 +610,5 @@ rc_run=$?
 exec docker exec -i \
   -e CS_CMD="$CS_CMD" \
   -e CS_PROGRAM_DIR="$CS_PROGRAM_DIR" \
+  -e CS_AUTO="${CS_AUTO:-}" \
   "$NAME" /bin/bash -lc "$INNER_SCRIPT"

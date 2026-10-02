@@ -1,5 +1,5 @@
 import type { BountyProgramConfig } from "@cyberstrike-io/hackbrowser/bugbounty"
-import { readFileSync, writeFileSync, existsSync, mkdirSync, lstatSync, chmodSync, renameSync, rmSync, realpathSync, openSync, closeSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync, mkdirSync, lstatSync, chmodSync, renameSync, rmSync, realpathSync, openSync, closeSync, statSync } from "node:fs"
 import type { Stats } from "node:fs"
 import path from "node:path"
 
@@ -61,8 +61,23 @@ export function classifyTargets(config: BountyProgramConfig): TargetClassificati
   return { inScope, outOfScope, urls, products, unclassified }
 }
 
-function policyPath(config: BountyProgramConfig, programsDir: string): string {
-  return path.join(programsDir, `${config.name}.policy.md`)
+/**
+ * Il path della policy integrale di un programma.
+ *
+ * `directory` e' la directory DEL PROGRAMMA (`…/bugbounty/programs/<handle>`),
+ * non la radice dei programmi: e' li' che `bb sync` scrive la policy e, in
+ * sandbox, e' l'unica directory che il perimetro copre.
+ *
+ * Prima questo path si costruiva da `programsDir` (la radice
+ * `…/bugbounty/programs`), producendo `…/bugbounty/programs/<handle>.policy.md`
+ * — un file che non esiste e che nessuno scriveva. La firma aveva due
+ * significati incompatibili per lo stesso parametro: qui la radice dei
+ * programmi, dentro `policyPath` la directory della policy. Con il layout
+ * nuovo il riferimento e' la directory del programma, che arriva gia' come
+ * `directory`.
+ */
+function policyPath(config: BountyProgramConfig, directory: string): string {
+  return path.join(directory, `${config.name}.policy.md`)
 }
 
 function ageDays(config: BountyProgramConfig, now = new Date()): number | null {
@@ -130,11 +145,25 @@ export function renderScopeDoc(config: BountyProgramConfig, now = new Date()): s
 
 export function renderAgentsDoc(
   config: BountyProgramConfig,
-  programsDir: string,
+  directory: string,
   now = new Date(),
 ): string {
-  const policy = policyPath(config, programsDir)
-  const hasPolicy = existsSync(policy)
+  const policy = policyPath(config, directory)
+  // «Presente» vuol dire «ha contenuto», non «esiste». MISURATO
+  // (deleg_647f66d0): il sandbox crea un placeholder vuoto con `touch` per
+  // avere un mount-point, e `existsSync` su quel file diceva «policy
+  // integrale in locale» indicando il nome di un file di ZERO byte. L'agente
+  // lo leggeva e riassumeva un contratto che non aveva mai letto — peggio
+  // del ramo «non in locale», che almeno gli dice di fare `bb sync`.
+  //
+  // Il controllo e' `stat`: dimensione > 0. Un file che non esiste e un file
+  // vuoto sono lo stesso caso dal punto di vista di chi deve leggerlo.
+  let hasPolicy = false
+  try {
+    hasPolicy = statSync(policy).size > 0
+  } catch {
+    // assente: resta false
+  }
   const out: string[] = []
   out.push(`# ${config.name} — bug bounty`)
   out.push("")
@@ -153,9 +182,25 @@ export function renderAgentsDoc(
   out.push(
     "  cancellare senza perdita. Non scrivere altrove, nemmeno in `/tmp` di sistema.",
   )
+  // Il rimando e' RELATIVO (`bcny.policy.md`), mai assoluto.
+  //
+  // `AGENTS.md` viene generato sull'host ma letto dentro il container, dove
+  // la directory del programma e' montata su un path DIVERSO. Un path
+  // assoluto qui e' un rimando rotto per costruzione: MISURATO il
+  // 2026-10-02, il file diceva
+  // `/home/marco/.cyberstrike/bugbounty/programs/bcny/bcny.policy.md` e nel
+  // container la policy era in `/work/bugbounty/programs/bcny/…`. L'agente
+  // leggeva il rimando, non trovava nulla, e si fermava dicendo «non posso
+  // verificarla». Nell run precedente era passato solo perche' aveva
+  // IGNORATO il rimando e indovinato il path locale: successo per fortuna,
+  // non per configurazione.
+  //
+  // Un nome relativo funziona nei due posti perche' la policy sta nella
+  // stessa directory di `AGENTS.md` in entrambi i casi (stesso layout,
+  // radice diversa). Il nome del file basta e resta leggibile.
   out.push(
     hasPolicy
-      ? `- La policy integrale del programma: \`${policy}\`.`
+      ? `- La policy integrale del programma: \`${path.basename(policy)}\` (in questa stessa directory).`
       : `- La policy integrale NON e' in locale: lanciare \`bb sync ${config.name}\` e poi rileggere questo file.`,
   )
   out.push("")
@@ -232,7 +277,7 @@ export function writeProgramDocs(
     // piazzato sul nome non riceve il contenuto, perche' `rename` sostituisce
     // il NOME (dentro la directory ancorata) invece di seguirlo.
     for (const [name, body] of [
-      ["AGENTS.md", renderAgentsDoc(config, programsDir, now)],
+      ["AGENTS.md", renderAgentsDoc(config, directory, now)],
       ["scope.md", renderScopeDoc(config, now)],
     ] as const) {
       const staging = `${anchor}/.${name}.${process.pid}-${Date.now().toString(36)}.tmp`
@@ -250,7 +295,7 @@ export function writeProgramDocs(
       }
       chmodSync(`${anchor}/${name}`, 0o600)
     }
-    return { agents, scope, policy: policyPath(config, programsDir) }
+    return { agents, scope, policy: policyPath(config, directory) }
   })
 }
 

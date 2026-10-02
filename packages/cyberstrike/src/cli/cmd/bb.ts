@@ -853,12 +853,15 @@ export const BBCommand = cmd({
               // mkdir la scrittura falliva con ENOENT e il dry-run non mostrava
               // niente — cioe' il comando che serve a ispezionare, non mostrava.
               fs.mkdirSync(directory, { recursive: true })
-              // `path.dirname(programsRoot)`, NON `programsRoot`: la policy la
-              // scrive `bb sync` nella root di bugbounty, mentre `programsRoot`
-              // e' la directory delle cartelle per-programma. Passando la
-              // seconda, `AGENTS.md` dichiarava "policy non in locale" su un
-              // file che esisteva — un rimando rotto su dati reali.
-              writeProgramDocs(config, directory, path.dirname(programsRoot))
+              // `programsRoot`, NON `path.dirname(programsRoot)`: la policy la
+              // scrive `bb sync` dentro `programs/<handle>/`, cioe' nella
+              // directory che il perimetro del sandbox copre. Passando la
+              // root di bugbounty, `AGENTS.md` dichiarava «policy non in
+              // locale» su un file che esisteva ma era fuori dal perimetro:
+              // l'agente lo seguiva e si fermava con `deniedByAsking`
+              // (misurato sul run del 2026-10-02). La directory del programma
+              // e' l'unica dentro cui il sandbox puo' far leggere un file.
+              writeProgramDocs(config, directory, programsRoot)
             } catch (e) {
               // I documenti sono un aiuto, non un prerequisito: se la scrittura
               // fallisce l'agente parte lo stesso e lo dice nel messaggio.

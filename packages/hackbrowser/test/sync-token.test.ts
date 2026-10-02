@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -145,10 +145,19 @@ describe("bb sync: due fonti complementari, il token NON e' obbligatorio", () =>
     const home = homeWith("secret-token")
     try {
       const r = await sync(home, s.anonURL, s.apiURL)
-      const policy = await Bun.file(path.join(home, "bugbounty", `${HANDLE}.policy.md`)).text()
+      // Il path e' `programs/<handle>/<handle>.policy.md`, NON la root di
+      // bugbounty: la policy deve stare nella directory che il perimetro del
+      // sandbox copre, altrimenti l'agente la dichiara irraggiungibile.
+      // MISURATO (deleg_647f66d0): questo test leggeva ancora il path root e
+      // non se ne accorse perche' non era mai stato eseguito — 1 fail su 6.
+      const policy = await Bun.file(path.join(home, "bugbounty", "programs", HANDLE, `${HANDLE}.policy.md`)).text()
       expect(policy.length).toBe(4000)
       // il token non deve finire MAI in un file scritto
       expect(policy).not.toContain("secret-token")
+      // CONTROLLO NEGATIVO: la copia nella root non deve piu' essere prodotta,
+      // altrimenti due copie divergono e quella che l'agente legge non e'
+      // quella appena sincronizzata.
+      expect(existsSync(path.join(home, "bugbounty", `${HANDLE}.policy.md`))).toBe(false)
     } finally {
       s.stop()
       rmSync(home, { recursive: true, force: true })

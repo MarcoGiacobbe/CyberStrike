@@ -12,6 +12,8 @@
 // the crawler reads, so a synced program is immediately crawlable.
 
 import { getBugBountyManager, loadHunterCredentials } from "./bugbounty.ts"
+import * as nodeFs from "node:fs"
+import path from "node:path"
 
 const GRAPHQL_URL = "https://hackerone.com/graphql"
 const API_BASE = "https://api.hackerone.com/v1/hackers"
@@ -256,9 +258,27 @@ export async function syncProgram(
   if (policy) cfg.rules!.custom!.push(`policy_excerpt: ${policy.slice(0, 500).replaceAll(/\s+/g, " ")}…`)
   manager.addProgram(handle, cfg as never)
   if (policy) {
+    // La policy va DENTRO `programs/<handle>/`, non nella root di bugbounty.
+    //
+    // Il perimetro del sandbox copre una sola directory di programma: se la
+    // policy sta nella root, l'agente la dichiara irraggiungibile e si ferma
+    // (misurato: `Read /work/bugbounty/bcny.policy.md` negato dal perimetro).
+    // Dentro la directory del programma e' leggibile per costruzione.
+    //
+    // La copia nella root non viene rimossa: li' vive il testo che
+    // `bb sync` aveva gia' scritto e altri strumenti potrebbero guardarlo.
+    // Perche' non e' piu' la fonte? Perche' due copie divergono e quella
+    // dentro il perimetro e' quella che l'agente legge davvero: deve essere
+    // l'unica dichiarata come «leggi questa», altrimenti `AGENTS.md` e il
+    // file reale non coincidono. `AGENTS.md` e' generato dallo stesso path
+    // che questa funzione usa, quindi i due non possono divergere.
     const dir = (manager as unknown as { programsDir: string }).programsDir
-    const { writeFileSync } = await import("fs")
-    writeFileSync(`${dir}/${handle}.policy.md`, policy)
+    // Import statici in fondo al file, per la stessa ragione del resto del
+    // progetto: gli import dinamici dentro la funzione non risolvono i tipi.
+    const { writeFileSync, mkdirSync } = nodeFs
+    const programDir = path.join(dir, "programs", handle)
+    mkdirSync(programDir, { recursive: true })
+    writeFileSync(path.join(programDir, `${handle}.policy.md`), policy)
   }
 
   return {
