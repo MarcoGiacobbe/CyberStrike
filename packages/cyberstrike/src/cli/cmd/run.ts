@@ -300,6 +300,14 @@ export const RunCommand = cmd({
           "entrano nel ruleset della sessione. Senza questo flag `run` non ha " +
           "nessun confine applicativo (solo i mount del filesystem)",
       })
+      .option("auto", {
+        type: "boolean",
+        describe:
+          "auto-approva ogni permesso in `ask` (reply `always`) invece di " +
+          "rifiutarlo: `run` diventa autonomo. I `deny` NON vengono toccati, " +
+          "quindi `--perimeter` resta un muro. Usalo solo se il perimetro e' " +
+          "gia' attivo: da solo significa via libera a `bash`",
+      })
       .option("port", {
         type: "number",
         describe: "port for the local server (defaults to random port if no value provided)",
@@ -498,6 +506,15 @@ export const RunCommand = cmd({
        */
       const deniedByAsking: Array<{ permission: string; patterns: string[] }> = []
 
+      /**
+       * Permessi concessi automaticamente da `--auto`. Non e' un contatore di
+       * successo: e' l'elenco di cio` che un operatore ha approvato al posto
+       * dell'umano. Serve perche' con `--auto` il run non si ferma piu`, e
+       * senza questo elenco un operatore non saprebbe dire, a posteriori,
+       * cosa e' passato senza filtro. Esce a fine run.
+       */
+      const grantedByAsking: Array<{ permission: string; patterns: string[] }> = []
+
       async function loop() {
         const toggles = new Map<string, boolean>()
 
@@ -593,6 +610,33 @@ export const RunCommand = cmd({
           if (event.type === "permission.asked") {
             const permission = event.properties
             if (permission.sessionID !== sessionID) continue
+
+            // `--auto` simula un operatore che approva: `ask` diventa `always`.
+            // NON tocca i `deny`, che sono un confine e non una domanda: quelli
+            // non arrivano mai qui (vedi nota sopra `deniedByAsking`), quindi
+            // `--auto` puo' solo far passare quello che un umano avrebbe
+            // potuto approvare, mai quello che il ruleset vieta.
+            //
+            // Attenzione: da solo, senza `--perimeter`, `bash` e' in `ask` e
+            // quindi `--auto` approva l'esecuzione di comandi arbitrari. E' una
+            // scelta esplicita e va combinata con `--perimeter`.
+            if (args.auto) {
+              grantedByAsking.push({
+                permission: permission.permission,
+                patterns: permission.patterns,
+              })
+              UI.println(
+                UI.Style.TEXT_WARNING_BOLD + "!",
+                UI.Style.TEXT_NORMAL +
+                  `permission requested: ${permission.permission} (${permission.patterns.join(", ")}); auto-approving`,
+              )
+              await sdk.permission.reply({
+                requestID: permission.id,
+                reply: "always",
+              })
+              continue
+            }
+
             deniedByAsking.push({
               permission: permission.permission,
               patterns: permission.patterns,
@@ -709,6 +753,26 @@ export const RunCommand = cmd({
             "del perimetro entrano da `bb hunt`.",
         )
         process.exit(1)
+      }
+
+      // Con `--auto` il run non si ferma piu' sui permessi, quindi l'unico
+      // avviso utile e Questo: cosa ha passato senza filtro umano. Non e' un
+      // errore e NON cambia l'exit — un operatore che approva e' un
+      // operatore, e il run puo' anche riuscire. Ma deve restare scritto che
+      // nessuno ha valutato quelle azioni: con `--auto` il perimetro e' l'unico
+      // filtro, e se l'hai dimenticato, questa e' l'ultima riga che lo dice.
+      if (grantedByAsking.length > 0) {
+        const righe = grantedByAsking
+          .map((d) => `  ${d.permission} (${d.patterns.join(", ")})`)
+          .join(EOL)
+        UI.println(
+          UI.Style.TEXT_WARNING_BOLD + "!  " + "Permessi auto-approvati (nessun operatore).",
+          UI.Style.TEXT_NORMAL,
+          EOL + righe,
+          EOL + EOL +
+            "Nessun umano ha valutato queste azioni: con `--auto` l'unico " +
+            "filtro che resta e' il perimetro.",
+        )
       }
     }
 
