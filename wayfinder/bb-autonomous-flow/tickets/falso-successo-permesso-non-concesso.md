@@ -86,21 +86,45 @@ Misurato (2026-10-02, run reale in sandbox):
 Il perimetro e dunque reale e precoce. Ma blocca invece di guidare: il
 l-agente non trova i file e prova a cercarli altrove.
 
-`--dir` NON e la risposta: misurato che spostare la cwd sul mount del programma
-fa crashare il provider (`no providers found` in `defaultModel`, exit 0, 7
-secondi). Il percorso esiste ed e scrivibile, quindi NON e un problema di mount.
+### RISOLTO (misurato 2026-10-02): era il seed della config, non la cwd
 
-**Correzione di una mia spiegazione falsa.** Avevo scritto che `--dir`
-rompesse il provider "perche la config smette di essere trovata nel percorso
-atteso". E' falso: dentro il container la config e in `/home/hunter/csconfig`,
-ci arriva regolarmente, ed `xdgConfig` dipende da `XDG_CONFIG_HOME`/`HOME`, non
-dalla cwd. La CAUSA esatta non e stata isolata. Cosa e misurato: `run --dir`
-fa solo `process.chdir` (`run.ts:326`) e poi `bootstrap(process.cwd())`
-(`run.ts:720`); la `Instance` risultante non ha piu provider. Non dichiarare la
-causa finche non e misurata.
+`--dir` verso la directory del programma crashava con `no providers found`.
+Tre misure, in ordine:
 
-Finche non e risolto, il prompt deve dire esplicitamente il path assoluto dei
-dati (`/work/bugbounty/programs/<handle>`).
+1. **La cwd non c'entra.** `run --dir /app`, cioe la STESSA directory di default,
+   crashava uguale. Non era lo spostamento della cwd.
+2. **Dove cerca davvero.** `config.ts:171` fa
+   `Filesystem.findUp("cyberstrike.json", Instance.directory, Instance.worktree)`,
+   cioe risale dalla directory del progetto. Da `/app` trovava
+   `/app/cyberstrike.json` (nel repo, montato `:ro`). Dalla directory del
+   programma risale fino a `/work/bugbounty/programs/bcny` e non trova niente.
+3. **Il seed scriveva un livello troppo in basso.** Il launcher copiava la
+   config in `VOL_CFG/cyberstrike.json`, ma `Global.Path.config` =
+   `$XDG_CONFIG_HOME/cyberstrike` (`global/index.ts:10`) e
+   `XDG_CONFIG_HOME=/home/hunter/csconfig`, quindi il codice cerca
+   `/home/hunter/csconfig/cyberstrike/cyberstrike.json`. Un livello di troppo.
+
+Da `/app` il provider funzionava solo per caso: la config montata non era mai
+letta, e si recuperava il `cyberstrike.json` del repo. Il bug era latente da
+sempre e si vedeva solo cambiando la cwd.
+
+Correzione: il seed scrive in `/dst/cyberstrike/cyberstrike.json`. La
+subdirectory deve preesistere nel volume, perche il container monta `VOL_CFG` in
+sola lettura e `mkdir` in `Config` fallisce con `EROFS`.
+
+**Controprova** (seed riportato al percorso sbagliato, volume ricreato da zero):
+il run muore con `EROFS`. Con il seed corretto: parte e risponde. Il test
+misura il fix, non il caso.
+
+**Esito misurato in sandbox su `bcny`, `run --dir` + `--perimeter`:**
+- l'agente elenca `AGENTS.md` e `scope.md` (prima leggeva
+  `/app/packages/cyberstrike`, 37 voci di sorgente, zero asset);
+- `/app/package.json` resta negato dal perimetro.
+
+Difetti preesistenti NON toccati da questa correzione: `read.ts` usa il path
+originale invece del canonico restituito dal controllo; `openChecked()` usa
+`O_NOFOLLOW` solo sull'ultimo componente, lasciando i parenti seguibili in una
+finestra TOCTOU. Sono fuori dallo scope di A2 e vanno verificati a parte.
 
 ## Correzione: l'ordine delle regole non e cio` che pensavo
 

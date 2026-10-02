@@ -58,11 +58,16 @@ suite CLI 104/104, typecheck 11/11.
 **Resta aperto:** la **cwd del sandbox e ancora `/app`**, quindi l-agente cerca i
 dati del programma nel posto sbagliato e il perimetro lo blocca invece di
 guidarlo. `--dir` da solo NON basta: misurato che spostare la cwd sul mount del
-programma fa crashare il provider (`no providers found`, exit 0, 7 s) pur
-essendo il path esistente e scrivibile. **Causa NON isolata**: la mia spiegazione
-iniziale (la config non viene piu trovata) e falsa, la config e in
-`/home/hunter/csconfig` e ci arriva regolarmente. Finche non e risolto il prompt
-deve dare il path assoluto `/work/bugbounty/programs/<handle>`. Nota anche: `read` su path esterno e in
+programma faceva crashare il provider. **RISOLTO 2026-10-02**: non era la cwd
+(`--dir /app`, la stessa directory di default, crashava uguale) ma il seed della
+config, che scriveva in `VOL_CFG/cyberstrike.json` mentre il codice cerca
+`$XDG_CONFIG_HOME/cyberstrike/cyberstrike.json` (`global/index.ts:10`). Da `/app`
+il provider funzionava solo per caso, recovering il `cyberstrike.json` del repo.
+Corretto e controprovato: col seed sbagliato il run muore con `EROFS`.
+
+Ora `--dir` + `--perimeter` vanno insieme. Misurato su `bcny`: l'agente elenca
+`AGENTS.md` e `scope.md` (prima leggeva i sorgenti di CyberStrike, zero asset) e
+`/app/package.json` resta negato. Nota anche: `read` su path esterno e in
 `ask`, quindi non esiste un'azione di lettura che il default conceda all'esterno —
 un test che confronta "leggio fuori" con e senza perimetro non distingue.
 

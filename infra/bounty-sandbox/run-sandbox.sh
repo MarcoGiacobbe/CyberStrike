@@ -98,8 +98,14 @@ mkdir -p "$PROGRAMS"
 # e cyberstrike-config poteva esserci gia' senza il file (misurato: conteneva
 # .gitignore e bun.lock di un'altra app, risultato "no providers found").
 if [ -f "$HOME/.config/cyberstrike/cyberstrike.json" ]; then
+  # Percorso CRITICO: Global.Path.config = $XDG_CONFIG_HOME/cyberstrike
+  # (global/index.ts:10) e XDG_CONFIG_HOME=/home/hunter/csconfig, quindi il file
+  # va in /dst/cyberstrike/cyberstrike.json. Scrivendolo in /dst/cyberstrike.json
+  # il codice non lo vede: `no providers found`. Misurato 2026-10-02.
+  # La subdirectory deve esistere gia' nel volume: il container monta VOL_CFG in
+  # sola lettura, quindi se manca `mkdir` in Config fallisce con EROFS.
   docker run --rm -u 0 -v "$VOL_CFG":/dst -v "$HOME/.config/cyberstrike/cyberstrike.json":/src:ro alpine \
-    sh -c 'mkdir -p /dst && cp /src /dst/cyberstrike.json && chown 1000:1000 /dst/cyberstrike.json && chmod 600 /dst/cyberstrike.json' >/dev/null
+    sh -c 'mkdir -p /dst/cyberstrike && cp /src /dst/cyberstrike/cyberstrike.json && chown -R 1000:1000 /dst/cyberstrike && chmod 600 /dst/cyberstrike/cyberstrike.json' >/dev/null
 fi
 
 # I provider si costruiscono dagli ENV (provider.ts:777 `env: provider.env`),
@@ -339,27 +345,23 @@ INNER_SCRIPT='cd /app
       # container, quindi l-agente aveva un disco confinato ma nessuna
       # regola nei tool. Il disco limita i file, non le azioni.
       #
-      # NON aggiungere il flag dir: spostare la cwd sul mount del programma
-      # fa crashare il provider (misurato: "no providers found" in
-      # defaultModel, exit 0, in 7 secondi). Il percorso esiste ed e
-      # scrivibile, quindi NON e un problema di mount: `run --dir` fa solo
-      # process.chdir e poi bootstrap(process.cwd()) (run.ts:326 e 720), e la
-      # Instance risultante non ha piu provider. La CAUSA esatta non e stata
-      # isolata: la spiegazione che avevo scritto prima (la config non viene
-      # piu trovata) e FALSA, la config e in /home/hunter/csconfig e ci
-      # arriva regolarmente. Non dichiarare la causa finche non e misurata.
+      # --dir e --perimeter vanno insieme: il primo mette l-agente davanti ai
+      # dati di caccia, il secondo gli impedisce di uscirne.
       #
-      # Difetto noto e NON risolto: l-agente parte da /app e legge i sorgenti
-      # di CyberStrike invece dei dati di caccia (misurato 2026-10-01: Read
-      # /app/packages/cyberstrike, 37 voci di sorgente, zero asset del
-      # programma). Finche cwd e provider non sono risolti insieme, il prompt
-      # deve dare il path assoluto /work/bugbounty/programs/<handle>.
+      # `--dir` da solo crashava con "no providers found". La causa NON era la
+      # cwd: `run --dir /app`, cioe la STESSA directory di default, crashava
+      # uguale. Era il seed della config, che scriveva in
+      # VOL_CFG/cyberstrike.json mentre il codice cerca
+      # $XDG_CONFIG_HOME/cyberstrike/cyberstrike.json (global/index.ts:10) —
+      # un livello di troppo. Finora non si notava perche a cwd=/app la config
+      # veniva recuperata da findUp sul cyberstrike.json del repo (:ro).
+      # Corretto piu in alto, in questo stesso file.
       #
       # NOTA: niente apostrofi in questi commenti. INNER_SCRIPT e una
       # stringa single-quoted: un apostrofo la chiude e lo script si rompe
       # con errore di sintassi (misurato tre volte).
       cyberstrike) exec bun run --cwd packages/cyberstrike src/index.ts run "$CS_CMD" \
-                          --perimeter "$CS_PROGRAM_DIR" ;;
+                          --dir "$CS_PROGRAM_DIR" --perimeter "$CS_PROGRAM_DIR" ;;
       bb)          exec bun run --cwd packages/cyberstrike src/index.ts $CS_CMD ;;
       tui)         exec bun run dev ;;
     esac'
